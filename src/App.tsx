@@ -291,7 +291,19 @@ export default function App() {
 
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
-  const [isMobile, setIsMobile] = useState<boolean>(false);
+  // Read the real viewport width on the very first render (not after mount)
+  // so the carousel paints directly in its correct mobile/desktop position.
+  // Previously this started as `false` (desktop) on every device and only
+  // flipped to the real value inside a useEffect after mount — on phones
+  // that meant the active card was laid out at the desktop coordinates for
+  // one frame, then animated (thanks to the transform/left/bottom
+  // transition) over to the correct mobile coordinates. That's the "two
+  // jumps" bug: a wrong first placement immediately followed by a
+  // self-correcting slide. Computing it eagerly here means mobile visitors
+  // get the right layout on frame one, so there's nothing left to correct.
+  const [isMobile, setIsMobile] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth < 640
+  );
   const [selectedSection, setSelectedSection] = useState<string>('team');
   const [liveMatch, setLiveMatch] = useState<EgyptMatchApiResponse>(null);
   const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
