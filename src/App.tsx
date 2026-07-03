@@ -6,10 +6,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   ArrowLeft, 
-  ArrowRight, 
-  Upload
+  ArrowRight
 } from 'lucide-react';
-import { getPlayersFromDB, savePlayersToDB } from './lib/db';
 
 // Preset background & panel color combinations
 const COLOR_PRESETS = [
@@ -52,91 +50,54 @@ const normalizePlayerColors = (p: any) => {
   };
 };
 
-// Generate 26 player slots. Zizo and Adel as the first two, rest are placeholders
+// Fixed squad list — sourced directly from /public images.
+// The player "name" shown behind the figure is always the image filename
+// (without extension), so the two stay in sync automatically.
+// "number" is the player's real shirt number (or role, e.g. "COACH").
+// Leave a player's number as null until it's confirmed.
+const SQUAD: { file: string; number: string | null }[] = [
+  { file: 'AbdelMoneim', number: '6' },
+  { file: 'adel', number: '20' },
+  { file: 'alaa', number: '26' },
+  { file: 'donga', number: '18' },
+  { file: 'emam', number: '8' },
+  { file: 'fathy', number: '14' },
+  { file: 'fatouh', number: null },
+  { file: 'haitham', number: null },
+  { file: 'hamza', number: null },
+  { file: 'hany', number: null },
+  { file: 'hassan', number: 'COACH' },
+  { file: 'hossam', number: null },
+  { file: 'kareem', number: null },
+  { file: 'mahdy', number: null },
+  { file: 'Marmoush', number: null },
+  { file: 'Marwan', number: null },
+  { file: 'mohaned', number: null },
+  { file: "Rabi'a", number: null },
+  { file: 'saber', number: null },
+  { file: 'salah', number: null },
+  { file: 'sheno', number: null },
+  { file: 'Shobeir', number: null },
+  { file: 'tarek', number: null },
+  { file: 'Trezeguet', number: null },
+  { file: 'yasser', number: null },
+  { file: 'Zico', number: null },
+  { file: 'zizo', number: null },
+];
+
 const createDefaultPlayers = () => {
-  const players = [];
-  
-  // Slot 1: Zizo
-  players.push({
-    id: 1,
-    name: 'ZIZO',
-    src: '/6zizo.png',
+  return SQUAD.map((p, index) => ({
+    id: index + 1,
+    name: p.file,
+    number: p.number,
+    src: `/${p.file}.png`,
     bg: '#5c2828',
     panel: '#743535'
-  });
-
-  // Slot 2: Adel
-  players.push({
-    id: 2,
-    name: 'ADEL',
-    src: '/adel.png',
-    bg: '#5c2828',
-    panel: '#743535'
-  });
-
-  // Slots 3 to 28
-  for (let i = 3; i <= 28; i++) {
-    players.push({
-      id: i,
-      name: `PLAYER ${i}`,
-      src: '', // empty image, prompts for upload
-      bg: '#5c2828',
-      panel: '#743535'
-    });
-  }
-  return players;
+  }));
 };
 
 // SVG Fractal Noise Grain Data URI for custom noise overlay
 const GRAIN_DATA_URI = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='noise'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23noise)' opacity='0.08'/></svg>";
-
-// Client-side image compressor to prevent local storage quota overflow
-const compressImage = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 500; // optimized size for avatar rendering
-        const MAX_HEIGHT = 850;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, width, height); // Clear to ensure full transparency support
-          ctx.drawImage(img, 0, 0, width, height);
-          // Use image/png to keep original transparency
-          const dataUrl = canvas.toDataURL('image/png');
-          resolve(dataUrl);
-        } else {
-          resolve(event.target?.result as string);
-        }
-      };
-      img.onerror = () => {
-        reject(new Error('Failed to load image'));
-      };
-    };
-    reader.onerror = (error) => reject(error);
-  });
-};
 
 // Dynamic helper to compute panel color on custom hex input
 const getLighterColor = (hex: string, percent: number = 15): string => {
@@ -158,54 +119,13 @@ const getSingleWordFontSize = (word: string) => {
 };
 
 export default function App() {
-  // Load initial players list from localStorage / meta-backup or use default
-  const [players, setPlayers] = useState(() => {
-    let list = createDefaultPlayers();
-    const saved = localStorage.getItem('toonhub_players_v3');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          list = parsed.map(normalizePlayerColors);
-        }
-      } catch (e) {
-        console.error("Failed to parse saved players", e);
-      }
-    } else {
-      const savedMeta = localStorage.getItem('toonhub_players_v3_meta');
-      if (savedMeta) {
-        try {
-          const parsed = JSON.parse(savedMeta);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            list = parsed.map(normalizePlayerColors);
-          }
-        } catch (e) {
-          console.error("Failed to parse saved meta players", e);
-        }
-      }
-    }
-
-    // Ensure there are at least 28 slots
-    if (list.length < 28) {
-      const padding = [];
-      for (let i = list.length + 1; i <= 28; i++) {
-        padding.push({
-          id: i,
-          name: `PLAYER ${i}`,
-          src: '',
-          bg: '#5c2828',
-          panel: '#743535'
-        });
-      }
-      list = [...list, ...padding];
-    }
-    return list;
-  });
+  // Fixed squad — no uploads, no per-visitor customization, no persistence.
+  // Everyone who opens the site sees the same 27 players and photos.
+  const [players] = useState(() => createDefaultPlayers().map(normalizePlayerColors));
 
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
   const [isMobile, setIsMobile] = useState<boolean>(false);
-  const [dbLoaded, setDbLoaded] = useState<boolean>(false);
   const [selectedSection, setSelectedSection] = useState<string>('team');
 
   // Reset activeIndex to 0 when section changes
@@ -217,91 +137,11 @@ export default function App() {
   const touchStartX = useRef<number>(0);
   const touchEndX = useRef<number>(0);
 
-  // Initialize and load from high-capacity IndexedDB on mount
+  // Preload every squad photo on mount so the carousel never flashes empty
   useEffect(() => {
-    const loadFromDB = async () => {
-      try {
-        const dbPlayers = await getPlayersFromDB();
-        if (dbPlayers && dbPlayers.length > 0) {
-          let normalized = dbPlayers.map(normalizePlayerColors);
-          if (normalized.length < 28) {
-            const padding = [];
-            for (let i = normalized.length + 1; i <= 28; i++) {
-              padding.push({
-                id: i,
-                name: `PLAYER ${i}`,
-                src: '',
-                bg: '#5c2828',
-                panel: '#743535'
-              });
-            }
-            normalized = [...normalized, ...padding];
-          }
-          setPlayers(normalized);
-        } else {
-          // If IndexedDB is empty, migrate from localStorage if available
-          const saved = localStorage.getItem('toonhub_players_v3');
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              if (parsed && parsed.length > 0) {
-                const normalized = parsed.map(normalizePlayerColors);
-                await savePlayersToDB(normalized);
-                setPlayers(normalized);
-              }
-            } catch (e) {
-              console.error(e);
-            }
-          }
-        }
-      } catch (err) {
-        console.error("Error loading players from IndexedDB:", err);
-      } finally {
-        setDbLoaded(true);
-      }
-    };
-    loadFromDB();
-  }, []);
-
-  // Sync players list to high-capacity IndexedDB and keep safe fallback in localStorage
-  useEffect(() => {
-    if (!dbLoaded) return; // CRITICAL: Do NOT overwrite with initial default state until loaded!
-
-    // 1. Write to IndexedDB asynchronously (no browser size limitations)
-    savePlayersToDB(players).catch((err) => {
-      console.error("Failed to save to IndexedDB:", err);
-    });
-
-    // 2. Write lightweight backup to localStorage (names and colors only, no large images)
-    // This retains custom styling and slots configuration without ever throwing a QuotaExceededError
-    try {
-      const lightweightPlayers = players.map(p => ({
-        id: p.id,
-        name: p.name,
-        bg: p.bg,
-        panel: p.panel,
-        src: p.src && p.src.startsWith('/') ? p.src : '' // Keep preloaded transparent templates, strip upload base64s
-      }));
-      localStorage.setItem('toonhub_players_v3_meta', JSON.stringify(lightweightPlayers));
-    } catch (e) {
-      console.warn("Failed to save lightweight metadata backup:", e);
-    }
-
-    // 3. Try to save full data to localStorage as extra fallback, but catch QuotaExceededError 
-    // so it NEVER throws unhandled exceptions and freezes/hangs the application
-    try {
-      localStorage.setItem('toonhub_players_v3', JSON.stringify(players));
-    } catch (e) {
-      console.warn("localStorage quota exceeded. Fallback to IndexedDB is active.", e);
-    }
-  }, [players, dbLoaded]);
-
-  // Preload preloaded files on mount
-  useEffect(() => {
-    const preloads = ['/6zizo.png', '/adel.png'];
-    preloads.forEach((src) => {
+    players.forEach((p) => {
       const img = new Image();
-      img.src = src;
+      img.src = p.src;
     });
 
     // Handle isMobile and window resizing
@@ -314,15 +154,6 @@ export default function App() {
     return () => {
       window.removeEventListener('resize', checkMobile);
     };
-  }, []);
-
-  // Update single player data
-  const handleUpdatePlayer = useCallback((id: number, updates: Partial<typeof players[0]>) => {
-    setPlayers((prev) => 
-      prev.map((player) => 
-        player.id === id ? { ...player, ...updates } : player
-      )
-    );
   }, []);
 
   // Filter players by active section (سيكشنز)
@@ -472,6 +303,10 @@ export default function App() {
   const activeItem = sectionPlayers[activeIndex] || sectionPlayers[0] || players[0];
   const slideNum = String(activeItem.id).padStart(2, '0');
   const displayName = activeItem.name.trim().toUpperCase() || `PLAYER ${activeItem.id}`;
+  // Jersey number (or role, e.g. "COACH") shown next to the player's name — not the slot order
+  const jerseyLabel = activeItem.number
+    ? (/^\d+$/.test(String(activeItem.number)) ? `#${activeItem.number}` : String(activeItem.number).toUpperCase())
+    : '';
 
   const isArabic = /[\u0600-\u06FF]/.test(displayName);
   const words = displayName.trim().split(/\s+/);
@@ -599,7 +434,6 @@ export default function App() {
             }
 
             const style = getRoleStyle(role);
-            const hasImage = !!item.src;
 
             return (
               <div 
@@ -608,57 +442,12 @@ export default function App() {
                 style={style}
                 className="group select-none flex items-center justify-center"
               >
-                {hasImage ? (
-                  <img 
-                    src={item.src} 
-                    alt={item.name}
-                    className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
-                    draggable={false}
-                  />
-                ) : (
-                  // Custom Interactive Upload Zone on Active Slide if Empty
-                  <label 
-                    onClick={(e) => {
-                      if (role !== 'center') {
-                        e.preventDefault(); // allow scrolling to it first
-                        setActiveIndex(i);
-                      }
-                    }}
-                    className={`absolute inset-x-4 bottom-4 top-4 rounded-[40px] border-3 border-dashed border-white/20 hover:border-white/50 bg-white/5 hover:bg-white/10 backdrop-blur-sm transition-all duration-300 flex flex-col items-center justify-center gap-4 cursor-pointer p-6 text-center ${role === 'center' ? 'pointer-events-auto' : 'pointer-events-none opacity-40'}`}
-                  >
-                    {role === 'center' && (
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        className="hidden" 
-                        onChange={async (e) => {
-                          if (e.target.files && e.target.files[0]) {
-                            try {
-                              const base64 = await compressImage(e.target.files[0]);
-                              handleUpdatePlayer(item.id, { src: base64 });
-                            } catch (err) {
-                              console.error(err);
-                            }
-                          }
-                        }}
-                      />
-                    )}
-                    <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center text-white group-hover:scale-110 transition-transform duration-300">
-                      <Upload size={28} className="text-white" />
-                    </div>
-                    <div>
-                      <p className="font-sans font-bold text-sm tracking-widest uppercase mb-1 text-white">
-                        SLOT #{String(item.id).padStart(2, '0')}
-                      </p>
-                      <p className="text-xs text-white/70 font-sans tracking-wide">
-                        انقر لرفع صورة اللاعب
-                      </p>
-                      <p className="text-[10px] text-white/40 font-mono mt-1">
-                        Click to upload picture
-                      </p>
-                    </div>
-                  </label>
-                )}
+                <img 
+                  src={item.src} 
+                  alt={item.name}
+                  className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
+                  draggable={false}
+                />
               </div>
             );
           })}
@@ -673,11 +462,13 @@ export default function App() {
         >
           <p className="font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] opacity-95 flex items-baseline gap-3">
             <span>{displayName}</span>
-            <span className="font-mono text-xs opacity-60 tracking-normal">#{slideNum}</span>
+            {jerseyLabel && (
+              <span className="font-mono text-xs opacity-60 tracking-normal">{jerseyLabel}</span>
+            )}
           </p>
 
           <p className="hidden sm:block text-xs opacity-75 leading-relaxed mb-4 font-normal">
-            تصفح تشكيلة منتخب مصر واستخدم السيكشنز بالأعلى للتنقل بين المراكز واللاعبين، أو ارفع صورًا مباشرة للاعبين الفارغين.
+            تصفح تشكيلة منتخب مصر واستخدم السيكشنز بالأعلى للتنقل بين المراكز واللاعبين.
           </p>
 
           <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
