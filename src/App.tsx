@@ -6,7 +6,15 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   ArrowLeft, 
-  ArrowRight
+  ArrowRight,
+  X,
+  Clock,
+  Footprints,
+  Target,
+  Handshake,
+  Sparkles,
+  Shield,
+  Languages,
 } from 'lucide-react';
 
 // Preset background & panel color combinations
@@ -100,6 +108,7 @@ const GROUP_MATCHES: {
   result: 'W' | 'D' | 'L';
   date: string;
   time: string;
+  isoDate: string;
 }[] = [
   {
     id: 1,
@@ -113,6 +122,7 @@ const GROUP_MATCHES: {
     result: 'D',
     date: 'Mon, Jun 15',
     time: '10:00 PM',
+    isoDate: '2026-06-15',
   },
   {
     id: 2,
@@ -126,6 +136,7 @@ const GROUP_MATCHES: {
     result: 'W',
     date: 'Mon, Jun 22',
     time: '4:00 AM',
+    isoDate: '2026-06-22',
   },
   {
     id: 3,
@@ -139,6 +150,7 @@ const GROUP_MATCHES: {
     result: 'D',
     date: 'Sat, Jun 27',
     time: '6:00 AM',
+    isoDate: '2026-06-27',
   },
 ];
 
@@ -154,6 +166,7 @@ const LIVE_MATCH = {
   stage: 'ROUND OF 32',
   date: 'Fri, Jul 3',
   time: '9:00 PM',
+  isoDate: '2026-07-03',
 };
 
 // Shape returned by our own /api/egypt-match endpoint (server.js), which
@@ -205,6 +218,72 @@ const getSingleWordFontSize = (word: string) => {
   return 'clamp(70px, 25vw, 360px)';
 };
 
+// Best-effort match between an API-FOOTBALL player name (e.g. "Mohamed Salah")
+// and our local squad photos (file names are usually surnames, e.g. "salah").
+// Falls back to null so the caller can render an initials avatar instead.
+const localPhotoFor = (apiName: string): { src: string; number: string | null } | null => {
+  if (!apiName) return null;
+  const norm = apiName.toLowerCase();
+  const found = SQUAD.find((p) => {
+    const file = p.file.toLowerCase().replace(/[^a-z]/g, '');
+    const disp = (p.displayName || '').toLowerCase();
+    return (file && norm.replace(/[^a-z\s]/g, '').includes(file)) || (disp && norm.includes(disp));
+  });
+  return found ? { src: `/${found.file}.webp`, number: found.number } : null;
+};
+
+const initialsFor = (name: string): string => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  return (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase();
+};
+
+// Minimal bilingual dictionary for the UI chrome (header, matches page,
+// footer, stats panel, lineup modal). Player names / API data stay as-is.
+const STRINGS = {
+  groupSummary: { ar: 'المجموعة G · المركز الثاني · تأهل', en: 'GROUP G · 2ND PLACE · QUALIFIED' },
+  matchesTitle: { ar: 'مباريات مصر', en: "Egypt's Matches" },
+  record: { ar: '1 فوز · 2 تعادل · 0 خسارة — 5 نقاط', en: '1W · 2D · 0L — 5 PTS' },
+  live: { ar: 'مباشر', en: 'LIVE' },
+  now: { ar: 'الآن', en: 'NOW' },
+  upcoming: { ar: 'قادمة', en: 'UPCOMING' },
+  fullTime: { ar: 'انتهت المباراة', en: 'FULL TIME' },
+  staticPreview: { ar: '· بيانات تقريبية', en: '· static preview' },
+  tapForLineup: { ar: 'اضغط لعرض التشكيل والإحصائيات', en: 'Tap for lineup & stats' },
+  home: { ar: 'أرض الديار', en: 'HOME' },
+  away: { ar: 'خارج الديار', en: 'AWAY' },
+  win: { ar: 'فوز', en: 'WIN' },
+  draw: { ar: 'تعادل', en: 'DRAW' },
+  loss: { ar: 'خسارة', en: 'LOSS' },
+  discoverLabel: { ar: 'كأس العالم 2026', en: '2026 WORLD CUP' },
+  discoverTitle: { ar: 'منتخب مصر', en: 'EGYPT SQUAD' },
+  pageDesc: {
+    ar: 'تصفح تشكيلة منتخب مصر واستخدم السيكشنز بالأعلى للتنقل بين المراكز واللاعبين.',
+    en: 'Browse the Egypt squad and use the sections above to move between players.',
+  },
+  footer: {
+    ar: 'هذا الموقع غير رسمي وغير تابع للاتحاد المصري لكرة القدم. تصميم عبدالله الصاوي',
+    en: 'This website is unofficial and not affiliated with the Egyptian Football Association. Designed by Abdullah ElSawy',
+  },
+  // Player stats panel
+  playerStats: { ar: 'إحصائيات اللاعب', en: 'Player Stats' },
+  minutesPlayed: { ar: 'الدقائق الملعوبة', en: 'Minutes Played' },
+  touches: { ar: 'اللمسات', en: 'Touches' },
+  goalsLabel: { ar: 'الأهداف', en: 'Goals' },
+  assistsLabel: { ar: 'الأسيست', en: 'Assists' },
+  chancesCreated: { ar: 'الفرص الممنوحة', en: 'Chances Created' },
+  defensiveActions: { ar: 'التدخلات الدفاعية', en: 'Defensive Actions' },
+  noStatsData: { ar: 'لا توجد بيانات متاحة لهذا اللاعب حاليًا', en: 'No data available for this player yet' },
+  loadingStats: { ar: 'جاري تحميل الإحصائيات...', en: 'Loading stats...' },
+  // Lineup modal
+  lineupTitle: { ar: 'التشكيل الأساسي', en: 'Starting XI' },
+  substitutesTitle: { ar: 'البدلاء', en: 'Substitutes' },
+  cameOn: { ar: 'شارك', en: 'came on' },
+  matchStats: { ar: 'إحصائيات المباراة', en: 'Match Stats' },
+  noLineupData: { ar: 'التشكيل غير متاح حاليًا لهذه المباراة', en: 'Lineup not available for this match yet' },
+  loadingLineup: { ar: 'جاري تحميل التشكيل...', en: 'Loading lineup...' },
+};
+
 export default function App() {
   // Fixed squad — no uploads, no per-visitor customization, no persistence.
   // Everyone who opens the site sees the same 27 players and photos.
@@ -216,6 +295,59 @@ export default function App() {
   const [selectedSection, setSelectedSection] = useState<string>('team');
   const [liveMatch, setLiveMatch] = useState<EgyptMatchApiResponse>(null);
   const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
+
+  // UI language toggle (site chrome only — player photos/names are unaffected)
+  const [lang, setLang] = useState<'ar' | 'en'>('ar');
+  const t = useCallback((key: keyof typeof STRINGS) => STRINGS[key][lang], [lang]);
+
+  // Player stats panel (opens when tapping the centered/active player)
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState(false);
+  const [statsData, setStatsData] = useState<null | {
+    name: string; minutes: number; touches: number; goals: number;
+    assists: number; chancesCreated: number; defensiveActions: number;
+  }>(null);
+  const [statsPlayerName, setStatsPlayerName] = useState('');
+
+  const openPlayerStats = useCallback((player: { name: string }) => {
+    setStatsPlayerName(player.name);
+    setStatsOpen(true);
+    setStatsLoading(true);
+    setStatsError(false);
+    setStatsData(null);
+    fetch(`/api/player-stats?name=${encodeURIComponent(player.name)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && d.available) setStatsData(d);
+        else setStatsError(true);
+      })
+      .catch(() => setStatsError(true))
+      .finally(() => setStatsLoading(false));
+  }, []);
+
+  // Match lineup modal (opens when tapping a match card on the Matches page)
+  const [lineupOpen, setLineupOpen] = useState(false);
+  const [lineupLoading, setLineupLoading] = useState(false);
+  const [lineupError, setLineupError] = useState(false);
+  const [lineupData, setLineupData] = useState<any>(null);
+  const [lineupOpponent, setLineupOpponent] = useState('');
+
+  const openLineup = useCallback((isoDate: string, opponent: string) => {
+    setLineupOpponent(opponent);
+    setLineupOpen(true);
+    setLineupLoading(true);
+    setLineupError(false);
+    setLineupData(null);
+    fetch(`/api/match-lineup?date=${encodeURIComponent(isoDate)}&opponent=${encodeURIComponent(opponent)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && d.available) setLineupData(d);
+        else setLineupError(true);
+      })
+      .catch(() => setLineupError(true))
+      .finally(() => setLineupLoading(false));
+  }, []);
 
   // Reset activeIndex to 0 when section changes
   useEffect(() => {
@@ -532,14 +664,28 @@ export default function App() {
         />
 
         {/* Header Section */}
-        <header className="absolute top-6 left-4 right-4 sm:left-8 sm:right-8 z-[60] flex flex-col md:flex-row gap-4 items-center justify-between pointer-events-auto w-full max-w-[calc(100%-2rem)] sm:max-w-[calc(100%-4rem)]">
-          <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6">
-            <button
-              onClick={() => setActiveIndex(0)}
-              className="text-sm font-bold uppercase tracking-[0.2em] text-white hover:text-white/80 transition-all duration-150"
-            >
-              {SECTIONS.find((sec) => sec.id === selectedSection)?.nameEn || 'TEAM'}
-            </button>
+        <header className="absolute top-2 sm:top-6 left-4 right-4 sm:left-8 sm:right-8 z-[60] flex flex-col md:flex-row gap-2 sm:gap-4 items-center justify-between pointer-events-auto w-full max-w-[calc(100%-2rem)] sm:max-w-[calc(100%-4rem)]">
+          <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-6">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setActiveIndex(0)}
+                className="text-sm font-bold uppercase tracking-[0.2em] text-white hover:text-white/80 transition-all duration-150"
+              >
+                {lang === 'ar'
+                  ? SECTIONS.find((sec) => sec.id === selectedSection)?.nameAr || 'الفريق'
+                  : SECTIONS.find((sec) => sec.id === selectedSection)?.nameEn || 'TEAM'}
+              </button>
+
+              {/* Language toggle */}
+              <button
+                onClick={() => setLang((l) => (l === 'ar' ? 'en' : 'ar'))}
+                aria-label="Toggle language"
+                className="flex items-center gap-1 text-[10px] font-bold text-white/75 hover:text-white bg-white/10 hover:bg-white/20 border border-white/20 rounded-full px-2 py-1 transition-all duration-150"
+              >
+                <Languages size={12} strokeWidth={2.25} />
+                <span>{lang === 'ar' ? 'EN' : 'AR'}</span>
+              </button>
+            </div>
             
             <div className="hidden sm:block h-4 w-[1.5px] bg-white/25" />
 
@@ -560,8 +706,17 @@ export default function App() {
                         : 'text-white/70 hover:text-white hover:bg-white/5'
                     }`}
                   >
-                    <span>{sec.nameAr}</span>
-                    <span className="text-[8.5px] opacity-60 font-mono hidden sm:inline">{sec.nameEn}</span>
+                    {lang === 'ar' ? (
+                      <>
+                        <span>{sec.nameAr}</span>
+                        <span className="text-[8.5px] opacity-60 font-mono hidden sm:inline">{sec.nameEn}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>{sec.nameEn}</span>
+                        <span className="text-[8.5px] opacity-60 font-mono hidden sm:inline">{sec.nameAr}</span>
+                      </>
+                    )}
                   </button>
                 );
               })}
@@ -629,7 +784,16 @@ export default function App() {
                 key={item.id} 
                 id={`figurine-item-${i}`}
                 style={style}
-                className="group select-none flex items-center justify-center"
+                className="group select-none flex items-center justify-center cursor-pointer pointer-events-auto"
+                onClick={() => {
+                  if (i === activeIndex) {
+                    openPlayerStats(item);
+                  } else if (!isAnimating) {
+                    setIsAnimating(true);
+                    setActiveIndex(i);
+                    setTimeout(() => setIsAnimating(false), 650);
+                  }
+                }}
               >
                 <img 
                   src={item.src} 
@@ -653,29 +817,32 @@ export default function App() {
             {/* Group summary */}
             <div className="text-center text-white">
               <span className="text-[10px] sm:text-xs uppercase tracking-[0.25em] text-white/55 font-mono">
-                GROUP G · 2ND PLACE · QUALIFIED
+                {t('groupSummary')}
               </span>
               <h2
                 className="font-display uppercase tracking-tighter mt-1"
                 style={{ fontSize: 'clamp(28px, 6vw, 56px)', fontWeight: 900, lineHeight: 0.95 }}
               >
-                مباريات مصر
+                {t('matchesTitle')}
               </h2>
-              <span className="text-xs sm:text-sm text-white/70 font-mono">1W · 2D · 0L — 5 PTS</span>
+              <span className="text-xs sm:text-sm text-white/70 font-mono">{t('record')}</span>
             </div>
 
             {/* Live knockout match */}
-            <div className="w-full max-w-md rounded-2xl border border-red-400/40 bg-white/10 backdrop-blur-lg p-5 sm:p-6 text-white shadow-lg shadow-black/20">
+            <div
+              onClick={() => openLineup(LIVE_MATCH.isoDate, liveDisplay.opponent)}
+              className="w-full max-w-md rounded-2xl border border-red-400/40 bg-white/10 backdrop-blur-lg p-5 sm:p-6 text-white shadow-lg shadow-black/20 cursor-pointer hover:bg-white/15 transition-colors duration-200"
+            >
               <div className="flex items-center justify-between mb-3">
                 {liveDisplay.isLive ? (
                   <span className="flex items-center gap-1.5 text-[11px] font-bold tracking-widest text-red-400">
                     <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                    LIVE {liveDisplay.minute ? `· ${liveDisplay.minute}'` : 'NOW'}
+                    {t('live')} {liveDisplay.minute ? `· ${liveDisplay.minute}'` : t('now')}
                   </span>
                 ) : liveDisplay.isUpcoming ? (
-                  <span className="text-[11px] font-bold tracking-widest text-white/70">UPCOMING</span>
+                  <span className="text-[11px] font-bold tracking-widest text-white/70">{t('upcoming')}</span>
                 ) : (
-                  <span className="text-[11px] font-bold tracking-widest text-white/50">FULL TIME</span>
+                  <span className="text-[11px] font-bold tracking-widest text-white/50">{t('fullTime')}</span>
                 )}
                 <span className="text-[10px] sm:text-xs font-mono text-white/55">{liveDisplay.stage}</span>
               </div>
@@ -698,7 +865,10 @@ export default function App() {
               </div>
               <div className="text-center mt-3 text-[10px] sm:text-xs text-white/50 font-mono">
                 {liveDisplay.kickoff}
-                {(liveDisplay.isFallback || liveMatchError) && ' · static preview'}
+                {(liveDisplay.isFallback || liveMatchError) && ` ${t('staticPreview')}`}
+              </div>
+              <div className="text-center mt-2 text-[9px] sm:text-[10px] text-white/40 font-mono">
+                {t('tapForLineup')}
               </div>
             </div>
 
@@ -707,14 +877,15 @@ export default function App() {
               {GROUP_MATCHES.map((m) => (
                 <div
                   key={m.id}
-                  className="rounded-2xl border border-white/15 bg-white/5 backdrop-blur-lg p-4 sm:p-5 text-white flex flex-col items-center gap-2 hover:bg-white/10 transition-colors duration-200"
+                  onClick={() => openLineup(m.isoDate, m.opponent)}
+                  className="rounded-2xl border border-white/15 bg-white/5 backdrop-blur-lg p-4 sm:p-5 text-white flex flex-col items-center gap-2 hover:bg-white/10 transition-colors duration-200 cursor-pointer"
                 >
                   <span className="text-[10px] font-mono tracking-widest text-white/50">{m.matchday}</span>
 
                   <div className="flex items-center gap-3 sm:gap-4 mt-1">
                     <div className="flex flex-col items-center">
                       <span className="text-2xl sm:text-3xl">🇪🇬</span>
-                      <span className="text-[10px] mt-1 font-mono text-white/60">{m.home ? 'HOME' : 'AWAY'}</span>
+                      <span className="text-[10px] mt-1 font-mono text-white/60">{m.home ? t('home') : t('away')}</span>
                     </div>
                     <div className="font-mono text-xl sm:text-2xl font-bold">
                       {m.home ? `${m.egyScore}–${m.oppScore}` : `${m.oppScore}–${m.egyScore}`}
@@ -734,7 +905,7 @@ export default function App() {
                         : 'bg-red-500/20 text-red-300'
                     }`}
                   >
-                    {m.result === 'W' ? 'WIN' : m.result === 'D' ? 'DRAW' : 'LOSS'}
+                    {m.result === 'W' ? t('win') : m.result === 'D' ? t('draw') : t('loss')}
                   </span>
 
                   <span className="text-[10px] text-white/45 font-mono">{m.date} · {m.time}</span>
@@ -749,7 +920,7 @@ export default function App() {
         {isTeamPage && (
         <div 
           id="nav-section-left"
-          className="absolute bottom-6 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white pointer-events-auto"
+          className="absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white pointer-events-auto"
         >
           <p className="font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] opacity-95 flex items-baseline gap-3">
             <span>{displayName}</span>
@@ -759,7 +930,7 @@ export default function App() {
           </p>
 
           <p className="hidden sm:block text-xs opacity-75 leading-relaxed mb-4 font-normal">
-            تصفح تشكيلة منتخب مصر واستخدم السيكشنز بالأعلى للتنقل بين المراكز واللاعبين.
+            {t('pageDesc')}
           </p>
 
           <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
@@ -795,7 +966,7 @@ export default function App() {
           className="absolute bottom-6 right-4 sm:bottom-16 sm:right-10 z-[60] text-right pointer-events-auto hidden sm:block"
         >
           <span className="text-[10px] uppercase tracking-widest text-white/60 font-mono block mb-1">
-            2026 WORLD CUP
+            {t('discoverLabel')}
           </span>
           <div
             className="flex items-center gap-2 font-display uppercase tracking-tight text-white/90"
@@ -805,20 +976,255 @@ export default function App() {
               lineHeight: 1,
             }}
           >
-            <span>EGYPT SQUAD</span>
+            <span>{t('discoverTitle')}</span>
           </div>
         </div>
         )}
 
-        {/* Footer disclaimer */}
+        {/* Footer disclaimer — kept clear of the bottom details panel above it */}
         <div
           id="site-footer"
-          className="absolute bottom-1.5 inset-x-0 z-[70] text-center pointer-events-none px-4"
+          className="absolute bottom-1 inset-x-0 z-[55] text-center pointer-events-none px-4"
         >
-          <p className="text-[8.5px] sm:text-[10px] text-white/45 font-mono tracking-wide leading-snug">
-            This website is unofficial and not affiliated with the Egyptian Football Association. Designed by Abdullah ElSawy +201061163091
+          <p className="text-[8px] sm:text-[10px] text-white/45 font-mono tracking-wide leading-snug">
+            {t('footer')} · +201061163091
           </p>
         </div>
+
+        {/* Player Stats Panel */}
+        <div
+          className={`fixed inset-0 z-[95] flex items-end sm:items-center justify-center transition-opacity duration-300 ${
+            statsOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+          }`}
+          dir={lang === 'ar' ? 'rtl' : 'ltr'}
+        >
+          <div
+            onClick={() => setStatsOpen(false)}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          />
+          <div
+            className={`relative w-full sm:max-w-md bg-white/10 border border-white/20 backdrop-blur-2xl rounded-t-3xl sm:rounded-3xl p-6 pb-8 text-white shadow-2xl transition-transform duration-400 ease-out ${
+              statsOpen ? 'translate-y-0' : 'translate-y-full sm:translate-y-10'
+            }`}
+          >
+            <button
+              onClick={() => setStatsOpen(false)}
+              aria-label="Close"
+              className="absolute top-4 end-4 w-8 h-8 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 transition-colors"
+            >
+              <X size={16} />
+            </button>
+
+            <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">{t('playerStats')}</p>
+            <h3 className="font-display uppercase text-2xl sm:text-3xl font-black tracking-tight mb-5">
+              {statsPlayerName}
+            </h3>
+
+            {statsLoading && (
+              <div className="py-8 text-center text-sm text-white/60">{t('loadingStats')}</div>
+            )}
+
+            {!statsLoading && (statsError || !statsData) && (
+              <div className="py-8 text-center text-sm text-white/60">{t('noStatsData')}</div>
+            )}
+
+            {!statsLoading && statsData && (
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
+                  { icon: Footprints, label: t('touches'), value: statsData.touches },
+                  { icon: Target, label: t('goalsLabel'), value: statsData.goals },
+                  { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
+                  { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
+                  { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
+                ].map((row, idx) => (
+                  <div key={idx} className="rounded-2xl bg-white/5 border border-white/10 p-3.5 flex flex-col gap-1.5">
+                    <row.icon size={16} className="text-white/50" strokeWidth={2} />
+                    <span className="text-2xl font-bold font-mono">{row.value}</span>
+                    <span className="text-[10px] uppercase tracking-wide text-white/50">{row.label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Match Lineup Modal */}
+        <div
+          className={`fixed inset-0 z-[95] flex items-end sm:items-center justify-center transition-opacity duration-300 ${
+            lineupOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+          }`}
+          dir={lang === 'ar' ? 'rtl' : 'ltr'}
+        >
+          <div
+            onClick={() => setLineupOpen(false)}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          />
+          <div
+            className={`relative w-full sm:max-w-2xl max-h-[88vh] overflow-y-auto bg-[#12201a]/90 border border-white/15 backdrop-blur-2xl rounded-t-3xl sm:rounded-3xl p-5 sm:p-7 text-white shadow-2xl transition-transform duration-400 ease-out ${
+              lineupOpen ? 'translate-y-0' : 'translate-y-full sm:translate-y-10'
+            }`}
+          >
+            <button
+              onClick={() => setLineupOpen(false)}
+              aria-label="Close"
+              className="absolute top-4 end-4 w-8 h-8 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 transition-colors z-10"
+            >
+              <X size={16} />
+            </button>
+
+            <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">🇪🇬 vs {lineupOpponent}</p>
+            <h3 className="font-display uppercase text-xl sm:text-2xl font-black tracking-tight mb-5">
+              {t('lineupTitle')}{lineupData?.formation ? ` · ${lineupData.formation}` : ''}
+            </h3>
+
+            {lineupLoading && (
+              <div className="py-10 text-center text-sm text-white/60">{t('loadingLineup')}</div>
+            )}
+
+            {!lineupLoading && (lineupError || !lineupData) && (
+              <div className="py-10 text-center text-sm text-white/60">{t('noLineupData')}</div>
+            )}
+
+            {!lineupLoading && lineupData && (
+              <>
+                {/* Pitch board */}
+                <LineupPitch startXI={lineupData.startXI} />
+
+                {/* Substitutes */}
+                {lineupData.substitutes?.length > 0 && (
+                  <div className="mt-6">
+                    <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-2">
+                      {t('substitutesTitle')}
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {lineupData.substitutes.map((s: any, idx: number) => {
+                        const photo = localPhotoFor(s.name);
+                        return (
+                          <div key={idx} className="flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 p-2">
+                            {photo ? (
+                              <img src={photo.src} alt={s.name} className="w-8 h-8 rounded-full object-cover object-top bg-white/10" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] font-bold">
+                                {initialsFor(s.name)}
+                              </div>
+                            )}
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-xs font-semibold truncate">{s.name}</span>
+                              {s.cameOn && (
+                                <span className="text-[9px] text-emerald-300 uppercase tracking-wide">{t('cameOn')}</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Match statistics */}
+                {lineupData.statistics?.length > 0 && (
+                  <div className="mt-6">
+                    <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-3">
+                      {t('matchStats')}
+                    </p>
+                    <div className="flex flex-col gap-3">
+                      {lineupData.statistics.map((s: any, idx: number) => (
+                        <StatBar key={idx} label={s.type} egypt={s.egypt} opponent={s.opponent} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Renders the starting XI on a schematic pitch using each player's
+// API-FOOTBALL "grid" position (row:col), falling back gracefully when
+// a player has no local photo (initials avatar instead).
+function LineupPitch({ startXI }: { startXI: { name: string; number: string | null; pos: string | null; grid: string | null }[] }) {
+  const withGrid = (startXI || []).filter((p) => p.grid);
+  const rows = withGrid.map((p) => Number(p.grid!.split(':')[0]));
+  const maxRow = rows.length ? Math.max(...rows) : 1;
+
+  return (
+    <div
+      className="relative w-full rounded-2xl overflow-hidden border border-white/15"
+      style={{
+        aspectRatio: '3 / 4',
+        background: 'repeating-linear-gradient(0deg, #1e5c3a, #1e5c3a 10%, #226640 10%, #226640 20%)',
+      }}
+    >
+      {/* Center line + circle for a minimal pitch feel */}
+      <div className="absolute left-0 right-0 top-1/2 h-px bg-white/25" />
+      <div className="absolute left-1/2 top-1/2 w-16 h-16 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/25" />
+      <div className="absolute left-1/2 top-0 w-24 h-10 -translate-x-1/2 border border-white/20 border-t-0" />
+      <div className="absolute left-1/2 bottom-0 w-24 h-10 -translate-x-1/2 border border-white/20 border-b-0" />
+
+      {(startXI || []).map((p, i) => {
+        if (!p.grid) return null;
+        const [rowStr] = p.grid.split(':');
+        const row = Number(rowStr);
+        const rowPlayers = withGrid.filter((pl) => Number(pl.grid!.split(':')[0]) === row);
+        const orderInRow = rowPlayers.findIndex((pl) => pl.name === p.name);
+        const top = 92 - ((row - 1) / Math.max(1, maxRow - 1)) * 84;
+        const left = ((orderInRow + 1) / (rowPlayers.length + 1)) * 100;
+        const photo = localPhotoFor(p.name);
+
+        return (
+          <div
+            key={i}
+            className="absolute flex flex-col items-center gap-1 -translate-x-1/2 -translate-y-1/2"
+            style={{ top: `${top}%`, left: `${left}%`, width: '20%' }}
+          >
+            {photo ? (
+              <img
+                src={photo.src}
+                alt={p.name}
+                className="w-9 h-9 sm:w-11 sm:h-11 rounded-full object-cover object-top border-2 border-white/70 bg-white/10 shadow-md"
+              />
+            ) : (
+              <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white/15 border-2 border-white/70 flex items-center justify-center text-[11px] font-bold shadow-md">
+                {initialsFor(p.name)}
+              </div>
+            )}
+            <span className="text-[8.5px] sm:text-[9.5px] font-semibold text-white text-center leading-tight max-w-full truncate px-0.5 bg-black/30 rounded">
+              {p.name?.split(' ').slice(-1)[0]}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Simple side-by-side comparison bar for a single match statistic.
+function StatBar({ label, egypt, opponent }: { key?: any; label: string; egypt: any; opponent: any }) {
+  const parseVal = (v: any) => {
+    if (v === null || v === undefined) return 0;
+    const n = parseFloat(String(v).replace('%', ''));
+    return Number.isNaN(n) ? 0 : n;
+  };
+  const egyVal = parseVal(egypt);
+  const oppVal = parseVal(opponent);
+  const total = egyVal + oppVal || 1;
+  const egyPct = (egyVal / total) * 100;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[11px] font-mono mb-1">
+        <span>{egypt ?? '–'}</span>
+        <span className="text-white/50 uppercase tracking-wide text-[10px]">{label}</span>
+        <span>{opponent ?? '–'}</span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden flex">
+        <div className="h-full bg-emerald-400" style={{ width: `${egyPct}%` }} />
+        <div className="h-full bg-white/30 flex-1" />
       </div>
     </div>
   );

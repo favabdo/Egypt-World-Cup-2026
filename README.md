@@ -28,3 +28,10 @@ This repo includes a `render.yaml` blueprint, so Render can pick up the settings
 - **Node version:** 18 or newer
 
 The build step runs `vite build` (output in `dist/`), and `npm start` runs `server.js`, a small Express server that serves the built files.
+
+## Environment variables
+
+Set these on Render (or in `.env` locally):
+
+- `FOOTBALL_DATA_API_KEY` — powers the live-match card on the Matches page (football-data.org).
+- `API_FOOTBALL_KEY` — powers per-player stats (tap the active player) and the match lineup/statistics modal (tap any match card). Get a free key at https://dashboard.api-football.com/register. Without this key, those two features show a friendly "no data" state instead of breaking.
