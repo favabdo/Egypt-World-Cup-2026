@@ -69,7 +69,7 @@ const normalizePlayerColors = (p: any) => {
 // "number" is the player's real shirt number (or role, e.g. "COACH").
 // Leave a player's number as null until it's confirmed.
 const SQUAD: { file: string; number: string | null; displayName?: string }[] = [
-  { file: 'Hosaam Hassan', number: 'COACH' },
+  { file: 'Hassan', number: 'COACH' },
   { file: 'Sheno', number: '1' },
   { file: 'Shobeir', number: '23' },
   { file: 'mahdy', number: '16' },
