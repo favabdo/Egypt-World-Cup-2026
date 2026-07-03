@@ -452,6 +452,7 @@ export default function App() {
   const navigate = useCallback((direction: 'next' | 'prev') => {
     if (isAnimating) return;
     setIsAnimating(true);
+    setStatsOpen(false);
 
     setActiveIndex((prev) => {
       const total = sectionPlayers.length;
@@ -524,13 +525,13 @@ export default function App() {
   };
 
   // 3D positioning styles per role in the carousel
-  const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back') => {
-    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1)';
+  const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back' | 'statsFocus') => {
+    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)';
     const baseStyle = {
       position: 'absolute' as const,
       aspectRatio: '0.6 / 1',
       transition,
-      willChange: 'transform, filter, opacity',
+      willChange: 'transform, filter, opacity, left',
     };
 
     switch (role) {
@@ -544,6 +545,19 @@ export default function App() {
           filter: 'blur(0px)',
           opacity: 1,
           zIndex: 20,
+        };
+      // The player photo slides here — from dead-center to the side — when
+      // its stats panel is open, instead of a popup covering it.
+      case 'statsFocus':
+        return {
+          ...baseStyle,
+          left: isMobile ? '26%' : '22%',
+          bottom: isMobile ? '4%' : '0',
+          height: isMobile ? '46%' : '82%',
+          transform: `translateX(-50%) scale(${isMobile ? 1 : 1.05})`,
+          filter: 'blur(0px)',
+          opacity: 1,
+          zIndex: 30,
         };
       case 'left':
         return {
@@ -739,7 +753,7 @@ export default function App() {
         {isTeamPage && (
         <div 
           id="ghost-text"
-          className="absolute inset-x-0 flex items-center justify-center pointer-events-none select-none z-2 text-white font-display uppercase tracking-tighter"
+          className="absolute inset-x-0 flex items-center justify-center pointer-events-none select-none z-2 text-white font-display uppercase tracking-tighter transition-opacity duration-500"
           style={{
             top: '18%',
             fontSize: getSingleWordFontSize(displayName),
@@ -747,7 +761,7 @@ export default function App() {
             lineHeight: 0.85,
             letterSpacing: '-0.02em',
             whiteSpace: 'pre-line',
-            opacity: 0.95,
+            opacity: statsOpen ? 0 : 0.95,
             textAlign: 'center',
             width: '100%',
             maxWidth: '95vw',
@@ -763,10 +777,13 @@ export default function App() {
         {isTeamPage && (
         <div id="carousel-stage" className="absolute inset-0 z-3">
           {sectionPlayers.map((item, i) => {
-            let role: 'center' | 'left' | 'right' | 'back';
+            let role: 'center' | 'left' | 'right' | 'back' | 'statsFocus';
             const total = sectionPlayers.length;
             if (i === activeIndex) {
-              role = 'center';
+              role = statsOpen ? 'statsFocus' : 'center';
+            } else if (statsOpen) {
+              // Everything else steps out of the way while stats are shown.
+              role = 'back';
             } else {
               if (i === (activeIndex + total - 1) % total) {
                 role = 'left';
@@ -787,8 +804,12 @@ export default function App() {
                 className="group select-none flex items-center justify-center cursor-pointer pointer-events-auto"
                 onClick={() => {
                   if (i === activeIndex) {
-                    openPlayerStats(item);
-                  } else if (!isAnimating) {
+                    if (statsOpen) {
+                      setStatsOpen(false);
+                    } else {
+                      openPlayerStats(item);
+                    }
+                  } else if (!isAnimating && !statsOpen) {
                     setIsAnimating(true);
                     setActiveIndex(i);
                     setTimeout(() => setIsAnimating(false), 650);
@@ -922,14 +943,14 @@ export default function App() {
           id="nav-section-left"
           className="absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white pointer-events-auto"
         >
-          <p className="font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] opacity-95 flex items-baseline gap-3">
+          <p className={`font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] flex items-baseline gap-3 transition-opacity duration-300 ${statsOpen ? 'opacity-0' : 'opacity-95'}`}>
             <span>{displayName}</span>
             {jerseyLabel && (
               <span className="font-mono text-xs opacity-60 tracking-normal">{jerseyLabel}</span>
             )}
           </p>
 
-          <p className="hidden sm:block text-xs opacity-75 leading-relaxed mb-4 font-normal">
+          <p className={`hidden sm:block text-xs leading-relaxed mb-4 font-normal transition-opacity duration-300 ${statsOpen ? 'opacity-0' : 'opacity-75'}`}>
             {t('pageDesc')}
           </p>
 
@@ -991,63 +1012,59 @@ export default function App() {
           </p>
         </div>
 
-        {/* Player Stats Panel */}
+        {/* Player Stats — appears beside the photo once it slides over, no popup/backdrop */}
+        {isTeamPage && (
         <div
-          className={`fixed inset-0 z-[95] flex items-end sm:items-center justify-center transition-opacity duration-300 ${
-            statsOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+          className={`absolute z-40 text-white transition-all duration-500 ease-out ${
+            statsOpen ? 'opacity-100 translate-x-0 pointer-events-auto' : 'opacity-0 translate-x-4 pointer-events-none'
           }`}
-          dir={lang === 'ar' ? 'rtl' : 'ltr'}
+          style={
+            isMobile
+              ? { left: '8%', right: '8%', top: '54%', bottom: '10%' }
+              : { left: '46%', right: '7%', top: '18%', bottom: '14%' }
+          }
         >
-          <div
+          <button
             onClick={() => setStatsOpen(false)}
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          />
-          <div
-            className={`relative w-full sm:max-w-md bg-white/10 border border-white/20 backdrop-blur-2xl rounded-t-3xl sm:rounded-3xl p-6 pb-8 text-white shadow-2xl transition-transform duration-400 ease-out ${
-              statsOpen ? 'translate-y-0' : 'translate-y-full sm:translate-y-10'
-            }`}
+            aria-label="Close"
+            className="absolute -top-2 end-0 w-8 h-8 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 backdrop-blur-md transition-colors"
           >
-            <button
-              onClick={() => setStatsOpen(false)}
-              aria-label="Close"
-              className="absolute top-4 end-4 w-8 h-8 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 transition-colors"
-            >
-              <X size={16} />
-            </button>
+            <X size={16} />
+          </button>
 
-            <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">{t('playerStats')}</p>
-            <h3 className="font-display uppercase text-2xl sm:text-3xl font-black tracking-tight mb-5">
-              {statsPlayerName}
-            </h3>
+          <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">{t('playerStats')}</p>
+          <h3 className="font-display uppercase text-xl sm:text-3xl font-black tracking-tight mb-4 sm:mb-6 pe-10">
+            {statsPlayerName}
+          </h3>
 
-            {statsLoading && (
-              <div className="py-8 text-center text-sm text-white/60">{t('loadingStats')}</div>
-            )}
+          {statsLoading && (
+            <div className="text-sm text-white/60">{t('loadingStats')}</div>
+          )}
 
-            {!statsLoading && (statsError || !statsData) && (
-              <div className="py-8 text-center text-sm text-white/60">{t('noStatsData')}</div>
-            )}
+          {!statsLoading && (statsError || !statsData) && (
+            <div className="text-sm text-white/60 max-w-xs">{t('noStatsData')}</div>
+          )}
 
-            {!statsLoading && statsData && (
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
-                  { icon: Footprints, label: t('touches'), value: statsData.touches },
-                  { icon: Target, label: t('goalsLabel'), value: statsData.goals },
-                  { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
-                  { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
-                  { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
-                ].map((row, idx) => (
-                  <div key={idx} className="rounded-2xl bg-white/5 border border-white/10 p-3.5 flex flex-col gap-1.5">
-                    <row.icon size={16} className="text-white/50" strokeWidth={2} />
-                    <span className="text-2xl font-bold font-mono">{row.value}</span>
-                    <span className="text-[10px] uppercase tracking-wide text-white/50">{row.label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          {!statsLoading && statsData && (
+            <div className="grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md">
+              {[
+                { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
+                { icon: Footprints, label: t('touches'), value: statsData.touches },
+                { icon: Target, label: t('goalsLabel'), value: statsData.goals },
+                { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
+                { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
+                { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
+              ].map((row, idx) => (
+                <div key={idx} className="rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5">
+                  <row.icon size={16} className="text-white/50" strokeWidth={2} />
+                  <span className="text-xl sm:text-2xl font-bold font-mono">{row.value}</span>
+                  <span className="text-[9.5px] sm:text-[10px] uppercase tracking-wide text-white/50">{row.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+        )}
 
         {/* Match Lineup Modal */}
         <div
