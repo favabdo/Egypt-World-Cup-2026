@@ -29,8 +29,7 @@ const isEgyptTeam = (team) =>
 // Talks to football-data.org and returns Egypt's most relevant World Cup
 // match: live if one is in progress, otherwise the next scheduled one,
 // otherwise the most recent finished one. Shared by /api/egypt-match (which
-// the Matches page polls directly) and by /api/player-stats below (which
-// needs *a* date to know which match's stats to pull from iSportsAPI).
+// the Matches page polls directly).
 async function fetchEgyptMatchMeta() {
   const now = Date.now();
   if (cache.data && now - cache.fetchedAt < CACHE_TTL_MS) {
@@ -92,257 +91,442 @@ app.get('/api/egypt-match', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// iSportsAPI integration (api.isportsapi.com)
-// Powers per-player match stats (minutes, touches, goals, assists, chances
-// created, defensive actions) and per-match lineups/formations.
+// TheSportsDB integration (thesportsdb.com)
+// Powers per-match lineups/formations, per-player TOURNAMENT-WIDE stats
+// (aggregated across every Egypt match, not just the last one), general
+// coach/team stats, and a richer "full match" bundle (lineup + team stats +
+// timeline) for the dedicated match page.
 //
-// Kept the env var name API_FOOTBALL_KEY (per request) even though it now
-// holds an iSportsAPI key, so no Render config changes were needed beyond
-// swapping the value.
+// Auth: v1 uses the API key as a URL path segment. The free test key "123"
+// works out of the box with modest per-endpoint rate limits; set
+// THESPORTSDB_API_KEY to a premium key for higher limits.
 //
-// Everything degrades gracefully (available: false) if the key is missing
-// or the upstream call fails, so the UI can show a friendly empty state.
+// Docs: https://www.thesportsdb.com/documentation
+//   - Search Events:      /searchevents.php?e=Team1_vs_Team2
+//   - Events on a day:    /eventsday.php?d=YYYY-MM-DD&s=Soccer
+//   - Lookup Event:       /lookupevent.php?id={idEvent}
+//   - Lookup Lineup:      /lookuplineup.php?id={idEvent}
+//       -> [{ idPlayer, strPlayer, strPosition, strHome, strSubstitute, intSquadNumber }]
+//   - Lookup Event Stats: /lookupeventstats.php?id={idEvent}
+//       -> [{ strStat, intHome, intAway }]  (team-level, e.g. Shots, Possession, Fouls)
+//   - Lookup Timeline:    /lookuptimeline.php?id={idEvent}
+//       -> [{ strTimeline: 'Goal'|'Card'|'subst', strTimelineDetail, idPlayer, strPlayer,
+//              idAssist, strAssist, intTime, idTeam, strTeam }]
+//         For goals: strPlayer = scorer, strAssist = assist provider (if any).
+//         For subs:  strPlayer = player going OFF, strAssist = player coming ON.
 //
-// Docs referenced:
-//   - Auth: http://api.isportsapi.com/<path>?api_key=KEY&...  (mirror: api2.isportsapi.com)
-//   - Schedule & Results (Basic): /sport/football/schedule/basic?date=YYYY-MM-DD
-//       -> [{ matchId, homeId, homeName, awayId, awayName, status, ... }]
-//   - Lineups: /sport/football/lineups?matchId=ID
-//       -> [{ matchId, homeFormation, awayFormation, homeLineup:[{playerId,name,number,position}], awayLineup, homeBackup, awayBackup }]
-//   - Player Stats (Match): /sport/football/playerstats/match?matchId=ID
-//       -> [{ playerId, teamId, name, playingTime, touches, goals, assist, keyPass, tackles, interception, clearances, firstTeam, ... }]
+// TheSportsDB is a metadata-first database — it doesn't expose deep
+// per-touch stats (touches, tackles, chances created). What IS reliably
+// available and what we build tournament-long totals from: appearances,
+// starts, minutes (approximated from sub timing), goals, assists, and
+// cards — plus team-level shots/possession/etc. per match.
 // ---------------------------------------------------------------------------
-const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY; // holds the iSportsAPI key
-const ISPORTS_HOSTS = ['http://api.isportsapi.com', 'http://api2.isportsapi.com'];
+const THESPORTSDB_KEY = process.env.THESPORTSDB_API_KEY || '123';
+const TSDB_BASE = `https://www.thesportsdb.com/api/v1/json/${THESPORTSDB_KEY}`;
 
-async function isportsApi(path, params) {
-  const qs = new URLSearchParams({ api_key: API_FOOTBALL_KEY, ...(params || {}) }).toString();
+async function tsdb(path, params) {
+  const qs = new URLSearchParams(params || {}).toString();
+  const url = `${TSDB_BASE}${path}${qs ? `?${qs}` : ''}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`TheSportsDB HTTP ${r.status} on ${path}`);
+  return r.json();
+}
 
-  let networkErr;
-  for (const host of ISPORTS_HOSTS) {
-    let json;
+// Egypt's fixture schedule for the current tournament — dates/opponents only
+// (used purely to resolve each match's TheSportsDB event ID; scores, cards,
+// lineups etc. below are all fetched live). Keep this in sync with
+// GROUP_MATCHES + LIVE_MATCH in src/App.tsx if the fixture list changes
+// (e.g. Egypt advancing to a new knockout round).
+const EGYPT_TOURNAMENT_MATCHES = [
+  { date: '2026-06-15', opponent: 'Belgium' },
+  { date: '2026-06-22', opponent: 'New Zealand' },
+  { date: '2026-06-27', opponent: 'Iran' },
+  { date: '2026-07-03', opponent: 'Australia' },
+];
+
+const slug = (s) => String(s || '').trim().replace(/\s+/g, '_');
+
+// Generic small TTL cache helper.
+function makeCache(ttlMs) {
+  const map = new Map();
+  return {
+    get(key) {
+      const hit = map.get(key);
+      if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+      return undefined;
+    },
+    set(key, data) {
+      map.set(key, { data, at: Date.now() });
+    },
+  };
+}
+
+const eventIdCache = makeCache(24 * 60 * 60 * 1000); // resolved fixtures barely change
+const matchBundleCache = makeCache(60 * 60 * 1000); // lineup/stats/timeline for a finished match are static
+const tournamentStatsCache = makeCache(5 * 60 * 1000); // aggregate endpoints, cheap to recompute from the bundle cache
+
+// Resolves a TheSportsDB idEvent for an Egypt fixture on a given date,
+// optionally narrowed by opponent name. Tries a direct fixture-name search
+// first (fast, targeted), then falls back to scanning that calendar day.
+async function resolveEventId(date, opponent) {
+  const cacheKey = `${date}|${opponent}`;
+  const cached = eventIdCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let found = null;
+  const tryNames = opponent
+    ? [`Egypt_vs_${slug(opponent)}`, `${slug(opponent)}_vs_Egypt`]
+    : [];
+
+  for (const e of tryNames) {
     try {
-      const r = await fetch(`${host}${path}?${qs}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      json = await r.json();
-    } catch (err) {
-      networkErr = err; // try the mirror host before giving up
-      continue;
+      const payload = await tsdb('/searchevents.php', { e });
+      const events = payload.event || [];
+      found = events.find((ev) => (ev.dateEvent || '').slice(0, 10) === date) || events[0] || null;
+      if (found) break;
+    } catch (_) {
+      /* try next strategy */
     }
-
-    // iSportsAPI returns { code, message, data }. code !== 0 means the
-    // request itself was rejected (bad key, no active plan, quota, etc.) —
-    // that's an account issue, not a network blip, so surface it loudly
-    // instead of silently retrying the mirror host.
-    if (json.code !== 0) {
-      console.error(`iSportsAPI error on ${path}:`, JSON.stringify(json));
-      throw new Error(`iSportsAPI rejected the request: ${json.message || JSON.stringify(json)}`);
-    }
-
-    return Array.isArray(json.data) ? json.data : json.data ? [json.data] : [];
   }
-  throw networkErr || new Error(`iSportsAPI request to ${path} failed on both hosts`);
+
+  if (!found) {
+    try {
+      const payload = await tsdb('/eventsday.php', { d: date, s: 'Soccer' });
+      const events = payload.events || [];
+      found = events.find(
+        (ev) => isEgyptTeam({ name: ev.strHomeTeam }) || isEgyptTeam({ name: ev.strAwayTeam })
+      ) || null;
+    } catch (_) {
+      /* give up */
+    }
+  }
+
+  const idEvent = found ? found.idEvent : null;
+  eventIdCache.set(cacheKey, idEvent);
+  return idEvent;
 }
 
-// Finds Egypt's match on a given date (optionally narrowed by opponent name)
-// straight from the Schedule & Results endpoint, which already returns
-// homeId/awayId — no separate "resolve team id" call needed.
-async function findEgyptMatch({ date, opponent }) {
-  const matches = await isportsApi('/sport/football/schedule/basic', { date });
-  const candidates = matches.filter((m) => isEgyptTeam({ name: m.homeName }) || isEgyptTeam({ name: m.awayName }));
-
-  if (opponent) {
-    const opp = opponent.trim().toLowerCase();
-    const narrowed = candidates.filter(
-      (m) => (m.homeName || '').toLowerCase().includes(opp) || (m.awayName || '').toLowerCase().includes(opp)
-    );
-    if (narrowed.length) return narrowed[0];
-  }
-  return candidates[0] || null;
+// Buckets a free-text TheSportsDB position (e.g. "Right Wing", "Attacking
+// Midfielder", "Centre-Back") into one of the four pitch rows. There's no
+// numeric formation string from this API, so the formation and grid are
+// synthesized entirely from these buckets.
+function classifyPosition(raw) {
+  const p = String(raw || '').toLowerCase();
+  if (p.includes('goalkeeper') || p === 'gk') return 'GK';
+  if (p.includes('back') || p.includes('defender') || p.includes('sweeper')) return 'DEF';
+  if (p.includes('forward') || p.includes('striker') || (p.includes('wing') && !p.includes('back'))) return 'FWD';
+  if (p.includes('midfield')) return 'MID';
+  return 'MID';
 }
 
-// Best-effort visual layout: iSportsAPI's lineup endpoint doesn't return
-// grid coordinates like API-FOOTBALL did, only a formation string (e.g.
-// "4-3-3"). We rebuild row:col coordinates assuming the squad array is
-// ordered GK -> DEF -> MID -> FWD, which is the common convention but isn't
-// guaranteed for every match. If the formation string doesn't parse cleanly
-// or its total doesn't match the squad size, we skip the synthesis and the
-// pitch simply renders without positions (same graceful fallback as when
-// API-FOOTBALL had no grid data).
-function synthesizeGrid(startXI, formation) {
-  const lines = String(formation || '')
-    .split('-')
-    .map((n) => parseInt(n, 10))
-    .filter((n) => Number.isFinite(n) && n > 0);
+const POSITION_ROW = { GK: 1, DEF: 2, MID: 3, FWD: 4 };
 
-  if (!Array.isArray(startXI) || startXI.length === 0 || lines.length === 0) {
-    return (startXI || []).map((p) => ({ ...p, grid: null }));
-  }
-  const expected = 1 + lines.reduce((a, b) => a + b, 0);
-  if (expected !== startXI.length) {
-    return startXI.map((p) => ({ ...p, grid: null }));
-  }
-
-  const out = [];
-  let i = 0;
-  out.push({ ...startXI[i], grid: '1:1' });
-  i += 1;
-  lines.forEach((count, lineIdx) => {
-    for (let col = 1; col <= count; col += 1) {
-      out.push({ ...startXI[i], grid: `${lineIdx + 2}:${col}` });
-      i += 1;
-    }
+// Builds the pitch grid + a synthesized "4-3-3"-style formation string from
+// bucketed positions. Every player who has a recognizable position gets a
+// row, so the board is never empty (the previous integration's grid could
+// silently come back all-null when the upstream formation string didn't
+// match the squad size).
+function buildFormationGrid(startXI) {
+  const withBucket = startXI.map((p) => ({ ...p, bucket: classifyPosition(p.pos) }));
+  const counts = { DEF: 0, MID: 0, FWD: 0 };
+  withBucket.forEach((p) => {
+    if (p.bucket !== 'GK') counts[p.bucket] += 1;
   });
-  return out;
+  const formation = counts.DEF || counts.MID || counts.FWD
+    ? `${counts.DEF}-${counts.MID}-${counts.FWD}`
+    : null;
+
+  const grid = withBucket.map((p) => ({ ...p, grid: `${POSITION_ROW[p.bucket]}:1` }));
+  return { startXI: grid, formation };
 }
 
-const playerStatsCache = new Map(); // name -> { data, fetchedAt }
-const PLAYER_CACHE_TTL_MS = 10 * 60 * 1000;
+// Fetches and normalizes everything TheSportsDB has for one Egypt match:
+// lineup (-> pitch + subs), team-level stats, and the goal/card/sub
+// timeline. This single bundle powers both the tournament stat aggregation
+// below and the full match page.
+async function getMatchBundle(date, opponent) {
+  const cacheKey = `${date}|${opponent}`;
+  const cached = matchBundleCache.get(cacheKey);
+  if (cached !== undefined) return cached;
 
-app.get('/api/player-stats', async (req, res) => {
-  const name = String(req.query.name || '').trim();
-  if (!name) return res.status(400).json({ available: false, error: 'Missing name' });
-
-  if (!API_FOOTBALL_KEY) {
-    return res.json({ available: false, error: 'API_FOOTBALL_KEY (iSportsAPI key) is not configured on the server.' });
-  }
-
-  const cached = playerStatsCache.get(name);
-  if (cached && Date.now() - cached.fetchedAt < PLAYER_CACHE_TTL_MS) {
-    return res.json(cached.data);
+  const idEvent = await resolveEventId(date, opponent);
+  if (!idEvent) {
+    const empty = { available: false, error: 'Fixture not found on TheSportsDB for that date.' };
+    matchBundleCache.set(cacheKey, empty);
+    return empty;
   }
 
   try {
-    // We show stats from Egypt's most relevant match (live/most recent) —
-    // there's no simple "career totals" endpoint on this plan, and for a
-    // World Cup squad page that's the most meaningful single match anyway.
-    const meta = await fetchEgyptMatchMeta();
-    if (!meta || !meta.utcDate) {
-      const empty = { available: false, error: 'No Egypt match found to pull stats from.' };
-      playerStatsCache.set(name, { data: empty, fetchedAt: Date.now() });
-      return res.json(empty);
-    }
+    const [eventPayload, lineupPayload, statsPayload, timelinePayload] = await Promise.all([
+      tsdb('/lookupevent.php', { id: idEvent }).catch(() => ({ events: [] })),
+      tsdb('/lookuplineup.php', { id: idEvent }).catch(() => ({ lineup: [] })),
+      tsdb('/lookupeventstats.php', { id: idEvent }).catch(() => ({ eventstats: [] })),
+      tsdb('/lookuptimeline.php', { id: idEvent }).catch(() => ({ timeline: [] })),
+    ]);
 
-    const isoDate = meta.utcDate.slice(0, 10);
-    const match = await findEgyptMatch({ date: isoDate });
-    if (!match) {
-      const empty = { available: false, error: 'Could not locate the match on iSportsAPI for that date.' };
-      playerStatsCache.set(name, { data: empty, fetchedAt: Date.now() });
-      return res.json(empty);
-    }
+    const event = (eventPayload.events || [])[0] || null;
+    const egyptIsHome = isEgyptTeam({ name: event?.strHomeTeam });
+    const opponentName = egyptIsHome ? event?.strAwayTeam : event?.strHomeTeam;
 
-    const egyptTeamId = isEgyptTeam({ name: match.homeName }) ? match.homeId : match.awayId;
-    const stats = await isportsApi('/sport/football/playerstats/match', { matchId: match.matchId });
-    const egyptStats = stats.filter((s) => String(s.teamId) === String(egyptTeamId));
+    const lineupRows = lineupPayload.lineup || [];
+    const egyptRows = lineupRows.filter((r) => (egyptIsHome ? r.strHome === 'Yes' : r.strHome === 'No'));
 
-    // Match by surname, same approach as before — local squad names are
-    // usually surnames, and iSportsAPI doesn't offer a name-search param.
+    const startersRaw = egyptRows
+      .filter((r) => r.strSubstitute !== 'Yes')
+      .map((r) => ({ idPlayer: r.idPlayer, name: r.strPlayer, number: r.intSquadNumber || null, pos: r.strPosition || null }));
+    const subsRaw = egyptRows
+      .filter((r) => r.strSubstitute === 'Yes')
+      .map((r) => ({ idPlayer: r.idPlayer, name: r.strPlayer, number: r.intSquadNumber || null, pos: r.strPosition || null }));
+
+    const timeline = (timelinePayload.timeline || [])
+      .map((t) => ({
+        minute: parseInt(t.intTime, 10) || 0,
+        type: String(t.strTimeline || '').toLowerCase(), // 'goal' | 'card' | 'subst'
+        detail: t.strTimelineDetail || null,
+        playerId: t.idPlayer || null,
+        playerName: t.strPlayer || null,
+        assistId: t.idAssist || null,
+        assistName: t.strAssist || null,
+        teamName: t.strTeam || null,
+        isEgypt: isEgyptTeam({ name: t.strTeam }),
+      }))
+      .sort((a, b) => a.minute - b.minute);
+
+    // Who actually came on as a sub (for the "came on" badge + tournament minutes).
+    const subbedOnIds = new Set(
+      timeline.filter((t) => t.type === 'subst' && t.isEgypt && t.assistId).map((t) => String(t.assistId))
+    );
+    const subbedOffMinute = new Map(); // idPlayer -> minute they were substituted off
+    const subbedOnMinute = new Map(); // idPlayer -> minute they came on
+    timeline
+      .filter((t) => t.type === 'subst' && t.isEgypt)
+      .forEach((t) => {
+        if (t.playerId) subbedOffMinute.set(String(t.playerId), t.minute);
+        if (t.assistId) subbedOnMinute.set(String(t.assistId), t.minute);
+      });
+
+    const { startXI, formation } = buildFormationGrid(startersRaw);
+    const substitutes = subsRaw.map((p) => ({
+      ...p,
+      cameOn: subbedOnIds.has(String(p.idPlayer)),
+      cameOnMinute: subbedOnMinute.get(String(p.idPlayer)) ?? null,
+    }));
+
+    const teamStats = (statsPayload.eventstats || []).map((s) => ({
+      type: s.strStat,
+      egypt: egyptIsHome ? s.intHome : s.intAway,
+      opponent: egyptIsHome ? s.intAway : s.intHome,
+    }));
+
+    const egyScore = event ? Number(egyptIsHome ? event.intHomeScore : event.intAwayScore) : null;
+    const oppScore = event ? Number(egyptIsHome ? event.intAwayScore : event.intHomeScore) : null;
+
+    const bundle = {
+      available: true,
+      idEvent,
+      date,
+      opponentName: opponentName || opponent,
+      egyptIsHome,
+      venue: event?.strVenue || null,
+      status: event?.strStatus || null,
+      score: { egypt: Number.isFinite(egyScore) ? egyScore : null, opponent: Number.isFinite(oppScore) ? oppScore : null },
+      formation,
+      startXI,
+      substitutes,
+      teamStats,
+      timeline,
+      // idPlayer -> { started, cameOn, offMinute, onMinute, pos } used by the
+      // tournament aggregator below.
+      appearances: [
+        ...startersRaw.map((p) => ({
+          idPlayer: p.idPlayer,
+          name: p.name,
+          pos: p.pos,
+          started: true,
+          offMinute: subbedOffMinute.get(String(p.idPlayer)) ?? null,
+        })),
+        ...substitutes
+          .filter((p) => p.cameOn)
+          .map((p) => ({ idPlayer: p.idPlayer, name: p.name, pos: p.pos, started: false, onMinute: p.cameOnMinute })),
+      ],
+    };
+
+    matchBundleCache.set(cacheKey, bundle);
+    return bundle;
+  } catch (err) {
+    const empty = { available: false, error: String(err) };
+    matchBundleCache.set(cacheKey, empty);
+    return empty;
+  }
+}
+
+async function getAllMatchBundles() {
+  return Promise.all(EGYPT_TOURNAMENT_MATCHES.map((m) => getMatchBundle(m.date, m.opponent)));
+}
+
+// GET /api/match-full?date=&opponent= — everything the new full match page
+// needs in one call: pitch lineup, substitutes, team stats, and the timeline.
+app.get('/api/match-full', async (req, res) => {
+  const date = String(req.query.date || '').trim();
+  const opponent = String(req.query.opponent || '').trim();
+  if (!date) return res.status(400).json({ available: false, error: 'Missing date' });
+  try {
+    const bundle = await getMatchBundle(date, opponent);
+    res.json(bundle);
+  } catch (err) {
+    res.json({ available: false, error: String(err) });
+  }
+});
+
+// Kept for backwards compatibility with any cached client bundle; the app
+// now calls /api/match-full directly.
+app.get('/api/match-lineup', async (req, res) => {
+  const date = String(req.query.date || '').trim();
+  const opponent = String(req.query.opponent || '').trim();
+  if (!date) return res.status(400).json({ available: false, error: 'Missing date' });
+  try {
+    const bundle = await getMatchBundle(date, opponent);
+    res.json(bundle);
+  } catch (err) {
+    res.json({ available: false, error: String(err) });
+  }
+});
+
+// GET /api/player-tournament-stats?name=Salah — aggregates a player's
+// appearances/starts/minutes/goals/assists/cards across EVERY Egypt match
+// resolved above (not just the latest one), plus a most-common position
+// bucket so the UI can tailor which stats it highlights.
+app.get('/api/player-tournament-stats', async (req, res) => {
+  const name = String(req.query.name || '').trim();
+  if (!name) return res.status(400).json({ available: false, error: 'Missing name' });
+
+  const cached = tournamentStatsCache.get(name);
+  if (cached !== undefined) return res.json(cached);
+
+  try {
+    const bundles = await getAllMatchBundles();
     const searchTerm = name.split(/\s+/).slice(-1)[0].toLowerCase();
-    const player =
-      egyptStats.find((p) => (p.name || '').toLowerCase().includes(searchTerm)) ||
-      egyptStats.find((p) => searchTerm.includes((p.name || '').toLowerCase().split(/\s+/).slice(-1)[0]));
+    const matches = (p) =>
+      p && p.name && (p.name.toLowerCase().includes(searchTerm) || searchTerm.includes(p.name.toLowerCase().split(/\s+/).slice(-1)[0]));
 
-    if (!player) {
-      const empty = { available: false, error: 'Player not found in this match\'s stats.' };
-      playerStatsCache.set(name, { data: empty, fetchedAt: Date.now() });
+    let appearances = 0;
+    let starts = 0;
+    let minutes = 0;
+    let goals = 0;
+    let assists = 0;
+    let yellowCards = 0;
+    let redCards = 0;
+    let cleanSheets = 0;
+    const posCounts = {};
+    let resolvedName = null;
+    let anyBundleAvailable = false;
+
+    for (const b of bundles) {
+      if (!b.available) continue;
+      anyBundleAvailable = true;
+
+      const app_ = (b.appearances || []).find(matches);
+      if (!app_) continue;
+
+      resolvedName = app_.name;
+      appearances += 1;
+      if (app_.started) starts += 1;
+      posCounts[classifyPosition(app_.pos)] = (posCounts[classifyPosition(app_.pos)] || 0) + 1;
+
+      // Approximate minutes: started + not subbed off => ~90; started + subbed
+      // off at X => X; came on at X => ~90 - X. Stoppage time is ignored.
+      if (app_.started) {
+        minutes += app_.offMinute != null ? app_.offMinute : 90;
+      } else {
+        minutes += app_.onMinute != null ? Math.max(0, 90 - app_.onMinute) : 0;
+      }
+
+      if (app_.started && b.score?.opponent === 0) cleanSheets += 1;
+
+      const idStr = String(app_.idPlayer);
+      b.timeline.forEach((t) => {
+        if (!t.isEgypt) return;
+        if (t.type === 'goal' && String(t.playerId) === idStr && !(t.detail || '').toLowerCase().includes('own')) goals += 1;
+        if (t.type === 'goal' && String(t.assistId) === idStr) assists += 1;
+        if (t.type === 'card' && String(t.playerId) === idStr) {
+          const d = (t.detail || '').toLowerCase();
+          if (d.includes('yellow')) yellowCards += 1;
+          if (d.includes('red')) redCards += 1;
+        }
+      });
+    }
+
+    if (!anyBundleAvailable) {
+      const empty = { available: false, error: 'Could not reach TheSportsDB for any tournament match.' };
+      tournamentStatsCache.set(name, empty);
       return res.json(empty);
     }
+    if (appearances === 0) {
+      const empty = { available: false, error: 'Player not found in any resolved lineup yet.' };
+      tournamentStatsCache.set(name, empty);
+      return res.json(empty);
+    }
+
+    const position = Object.entries(posCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'MID';
 
     const data = {
       available: true,
-      name: player.name || name,
-      minutes: Number(player.playingTime) || 0,
-      touches: Number(player.touches) || 0,
-      goals: Number(player.goals) || 0,
-      assists: Number(player.assist) || 0,
-      chancesCreated: Number(player.keyPass) || 0,
-      defensiveActions:
-        (Number(player.tackles) || 0) + (Number(player.interception) || 0) + (Number(player.clearances) || 0),
+      name: resolvedName || name,
+      position,
+      appearances,
+      starts,
+      minutes,
+      goals,
+      assists,
+      yellowCards,
+      redCards,
+      cleanSheets,
     };
-
-    playerStatsCache.set(name, { data, fetchedAt: Date.now() });
+    tournamentStatsCache.set(name, data);
     res.json(data);
   } catch (err) {
     res.json({ available: false, error: String(err) });
   }
 });
 
-const lineupCache = new Map(); // `${date}|${opponent}` -> { data, fetchedAt }
-const LINEUP_CACHE_TTL_MS = 30 * 1000;
-
-app.get('/api/match-lineup', async (req, res) => {
-  const date = String(req.query.date || '').trim(); // YYYY-MM-DD
-  const opponent = String(req.query.opponent || '').trim();
-  if (!date) return res.status(400).json({ available: false, error: 'Missing date' });
-
-  if (!API_FOOTBALL_KEY) {
-    return res.json({ available: false, error: 'API_FOOTBALL_KEY (iSportsAPI key) is not configured on the server.' });
-  }
-
-  const cacheKey = `${date}|${opponent}`;
-  const cached = lineupCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < LINEUP_CACHE_TTL_MS) {
-    return res.json(cached.data);
-  }
+// GET /api/coach-stats — general tournament-wide team record (matches
+// played, W/D/L, goals for/against, clean sheets), shown for the coach card
+// since managers aren't modeled as their own entity on TheSportsDB.
+app.get('/api/coach-stats', async (req, res) => {
+  const cached = tournamentStatsCache.get('__coach__');
+  if (cached !== undefined) return res.json(cached);
 
   try {
-    const match = await findEgyptMatch({ date, opponent });
-    if (!match) {
-      const empty = { available: false, error: 'Fixture not found for that date' };
-      lineupCache.set(cacheKey, { data: empty, fetchedAt: Date.now() });
+    const bundles = await getAllMatchBundles();
+    const played = bundles.filter((b) => b.available && b.score?.egypt != null && b.score?.opponent != null);
+
+    if (played.length === 0) {
+      const empty = { available: false, error: 'Could not reach TheSportsDB for any tournament match.' };
+      tournamentStatsCache.set('__coach__', empty);
       return res.json(empty);
     }
 
-    const egyptIsHome = isEgyptTeam({ name: match.homeName });
-    const egyptTeamId = egyptIsHome ? match.homeId : match.awayId;
-
-    const lineupRows = await isportsApi('/sport/football/lineups', { matchId: match.matchId });
-    const lineup = lineupRows[0];
-    if (!lineup) {
-      const empty = { available: false, error: 'Lineup not published yet for this match' };
-      lineupCache.set(cacheKey, { data: empty, fetchedAt: Date.now() });
-      return res.json(empty);
-    }
-
-    const egyptFormation = egyptIsHome ? lineup.homeFormation : lineup.awayFormation;
-    const rawXI = (egyptIsHome ? lineup.homeLineup : lineup.awayLineup) || [];
-    const rawSubs = (egyptIsHome ? lineup.homeBackup : lineup.awayBackup) || [];
-
-    // Cross-reference match player stats (if available) to know who was
-    // actually subbed on, same UX as before. Optional — lineup still
-    // renders fine without it.
-    let subbedInIds = new Set();
-    try {
-      const stats = await isportsApi('/sport/football/playerstats/match', { matchId: match.matchId });
-      stats
-        .filter((s) => String(s.teamId) === String(egyptTeamId) && !s.firstTeam && Number(s.playingTime) > 0)
-        .forEach((s) => subbedInIds.add(String(s.playerId)));
-    } catch (_) {
-      /* stats optional */
-    }
-
-    const startXIBase = rawXI.map((p) => ({ name: p.name, number: p.number, pos: p.position || null }));
-    const startXI = synthesizeGrid(startXIBase, egyptFormation);
+    let wins = 0, draws = 0, losses = 0, goalsFor = 0, goalsAgainst = 0, cleanSheets = 0;
+    played.forEach((b) => {
+      goalsFor += b.score.egypt;
+      goalsAgainst += b.score.opponent;
+      if (b.score.opponent === 0) cleanSheets += 1;
+      if (b.score.egypt > b.score.opponent) wins += 1;
+      else if (b.score.egypt === b.score.opponent) draws += 1;
+      else losses += 1;
+    });
 
     const data = {
       available: true,
-      formation: egyptFormation || null,
-      opponentName: egyptIsHome ? match.awayName : match.homeName,
-      status: match.status,
-      startXI,
-      substitutes: rawSubs.map((p) => ({
-        name: p.name,
-        number: p.number,
-        pos: p.position || null,
-        cameOn: subbedInIds.has(String(p.playerId)),
-      })),
-      // Not exposed by this iSportsAPI plan's lineup endpoint — the UI
-      // hides these sections gracefully when absent.
-      coach: null,
-      statistics: [],
+      matchesPlayed: played.length,
+      wins,
+      draws,
+      losses,
+      goalsFor,
+      goalsAgainst,
+      cleanSheets,
     };
-
-    lineupCache.set(cacheKey, { data, fetchedAt: Date.now() });
+    tournamentStatsCache.set('__coach__', data);
     res.json(data);
   } catch (err) {
     res.json({ available: false, error: String(err) });
