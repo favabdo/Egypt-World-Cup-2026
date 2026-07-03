@@ -108,6 +108,18 @@ async function apiFootball(endpoint, params) {
   const r = await fetch(url, { headers: { 'x-apisports-key': API_FOOTBALL_KEY } });
   if (!r.ok) throw new Error(`API-FOOTBALL ${r.status}`);
   const json = await r.json();
+
+  // API-FOOTBALL returns HTTP 200 even on auth/quota problems — the real
+  // error lives in json.errors (an object OR array depending on the error
+  // type). An empty `response` with a non-empty `errors` is what was
+  // silently surfacing as "Could not resolve Egypt team id" with no
+  // indication of *why*. Surface it loudly so Render logs show the cause.
+  const hasErrors = json.errors && (Array.isArray(json.errors) ? json.errors.length > 0 : Object.keys(json.errors).length > 0);
+  if (hasErrors) {
+    console.error(`API-FOOTBALL error on ${endpoint}:`, JSON.stringify(json.errors), '| requests today:', json.results, '/', json?.paging?.total);
+    throw new Error(`API-FOOTBALL rejected the request: ${JSON.stringify(json.errors)}`);
+  }
+
   return Array.isArray(json.response) ? json.response : [];
 }
 
