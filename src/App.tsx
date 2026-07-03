@@ -304,6 +304,29 @@ export default function App() {
   const [isMobile, setIsMobile] = useState<boolean>(
     () => typeof window !== 'undefined' && window.innerWidth < 640
   );
+  // Guards the very first paint of the carousel. While this is false, the
+  // active card renders with NO css transition, so whatever its style
+  // resolves to on frame one is shown instantly with no motion at all — no
+  // sliding in from the wrong spot. Once the browser has actually painted
+  // that first frame, we flip this to true and every position change after
+  // that (tapping a card, next/prev, resize, stats open/close) animates
+  // smoothly like before. Using two nested requestAnimationFrame calls
+  // (rather than a plain effect) makes sure we wait for a real committed
+  // paint, not just a React commit, before turning transitions back on —
+  // otherwise the enable-transition render and the correct-position render
+  // can land in the same paint and still produce a one-frame slide.
+  const [layoutReady, setLayoutReady] = useState(false);
+  useEffect(() => {
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setLayoutReady(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, []);
+
   const [selectedSection, setSelectedSection] = useState<string>('team');
   const [liveMatch, setLiveMatch] = useState<EgyptMatchApiResponse>(null);
   const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
@@ -538,7 +561,9 @@ export default function App() {
 
   // 3D positioning styles per role in the carousel
   const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back' | 'statsFocus') => {
-    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)';
+    const transition = layoutReady
+      ? 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)'
+      : 'none';
     const baseStyle = {
       position: 'absolute' as const,
       aspectRatio: '0.6 / 1',
