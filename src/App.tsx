@@ -63,7 +63,17 @@ const normalizePlayerColors = (p: any) => {
 // (without extension), so the two stay in sync automatically.
 // "number" is the player's real shirt number (or role, e.g. "COACH").
 // Leave a player's number as null until it's confirmed.
-const SQUAD: { file: string; number: string | null; displayName?: string }[] = [
+//
+// "apiName" (optional): the exact name TheSportsDB has on file for this
+// player (check https://www.thesportsdb.com/search.php?s=<name>). Our
+// backend matches players by NAME, not by a stable ID, so if the local
+// nickname (file/displayName) doesn't resemble the player's real registered
+// name, stats/lineup matching for that player will silently fail no matter
+// how correctly the server is configured. Set apiName to fix that per
+// player without touching photos or the name shown on the card. Leave it
+// unset for players who don't correspond to a real pro footballer (their
+// individual stats card will simply show "no data", which is expected).
+const SQUAD: { file: string; number: string | null; displayName?: string; apiName?: string }[] = [
   { file: 'hassan', number: 'COACH' },
   { file: 'sheno', number: '1' },
   { file: 'Shobeir', number: '23' },
@@ -87,10 +97,10 @@ const SQUAD: { file: string; number: string | null; displayName?: string }[] = [
   { file: 'haitham', number: '12' },
   { file: 'zizo', number: '25' },
   { file: 'Zico', number: '11' },
-  { file: 'Trezeguet', number: '7' },
-  { file: 'salah', number: '10' },
+  { file: 'Trezeguet', number: '7', apiName: 'Mahmoud Hassan' },
+  { file: 'salah', number: '10', apiName: 'Mohamed Salah' },
   { file: 'hamza', number: '9' },
-  { file: 'Marmoush', number: '22' },
+  { file: 'Marmoush', number: '22', apiName: 'Omar Marmoush' },
 ];
 
 // Egypt's FIFA World Cup 2026 matches — Group G (finished with a squad-club
@@ -189,6 +199,9 @@ const createDefaultPlayers = () => {
   return SQUAD.map((p, index) => ({
     id: index + 1,
     name: p.displayName || p.file,
+    // Real registered name to search the stats API with (falls back to the
+    // display name when the player has no apiName override — see SQUAD).
+    apiName: p.apiName || p.displayName || p.file,
     number: p.number,
     src: `/${p.file}.webp`,
     bg: '#5c2828',
@@ -268,11 +281,11 @@ const STRINGS = {
   // Player stats panel
   playerStats: { ar: 'إحصائيات اللاعب', en: 'Player Stats' },
   minutesPlayed: { ar: 'الدقائق الملعوبة', en: 'Minutes Played' },
-  touches: { ar: 'اللمسات', en: 'Touches' },
+  appearances: { ar: 'المباريات', en: 'Appearances' },
   goalsLabel: { ar: 'الأهداف', en: 'Goals' },
   assistsLabel: { ar: 'الأسيست', en: 'Assists' },
-  chancesCreated: { ar: 'الفرص الممنوحة', en: 'Chances Created' },
-  defensiveActions: { ar: 'التدخلات الدفاعية', en: 'Defensive Actions' },
+  yellowCardsLabel: { ar: 'البطاقات الصفراء', en: 'Yellow Cards' },
+  cleanSheetsLabel: { ar: 'الشباك النظيفة', en: 'Clean Sheets' },
   noStatsData: { ar: 'لا توجد بيانات متاحة لهذا اللاعب حاليًا', en: 'No data available for this player yet' },
   loadingStats: { ar: 'جاري تحميل الإحصائيات...', en: 'Loading stats...' },
   // Lineup modal
@@ -305,18 +318,24 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState(false);
   const [statsData, setStatsData] = useState<null | {
-    name: string; minutes: number; touches: number; goals: number;
-    assists: number; chancesCreated: number; defensiveActions: number;
+    name: string; appearances: number; starts: number; minutes: number;
+    goals: number; assists: number; yellowCards: number; redCards: number;
+    cleanSheets: number;
   }>(null);
   const [statsPlayerName, setStatsPlayerName] = useState('');
 
-  const openPlayerStats = useCallback((player: { name: string }) => {
+  const openPlayerStats = useCallback((player: { name: string; apiName?: string }) => {
     setStatsPlayerName(player.name);
     setStatsOpen(true);
     setStatsLoading(true);
     setStatsError(false);
     setStatsData(null);
-    fetch(`/api/player-stats?name=${encodeURIComponent(player.name)}`)
+    // NOTE: the backend route is /api/player-tournament-stats (this used to
+    // point at /api/player-stats, which doesn't exist on the server — every
+    // call was silently hitting the SPA fallback and failing). It also
+    // matches players by name, so we send apiName (the player's real
+    // registered name) when one is set in SQUAD, not the local nickname.
+    fetch(`/api/player-tournament-stats?name=${encodeURIComponent(player.apiName || player.name)}`)
       .then((r) => r.json())
       .then((d) => {
         if (d && d.available) setStatsData(d);
@@ -1049,11 +1068,11 @@ export default function App() {
             <div className="grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md">
               {[
                 { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
-                { icon: Footprints, label: t('touches'), value: statsData.touches },
+                { icon: Footprints, label: t('appearances'), value: statsData.appearances },
                 { icon: Target, label: t('goalsLabel'), value: statsData.goals },
                 { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
-                { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
-                { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
+                { icon: Sparkles, label: t('yellowCardsLabel'), value: statsData.yellowCards },
+                { icon: Shield, label: t('cleanSheetsLabel'), value: statsData.cleanSheets },
               ].map((row, idx) => (
                 <div key={idx} className="rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5">
                   <row.icon size={16} className="text-white/50" strokeWidth={2} />

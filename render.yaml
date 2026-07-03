@@ -8,4 +8,17 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20.11.0
+      # Required for the live-match card (football-data.org). Get a free key
+      # at https://www.football-data.org/client/register, then set the
+      # actual value in the Render Dashboard -> Environment (do not commit
+      # real keys to this file).
+      - key: FOOTBALL_DATA_API_KEY
+        sync: false
+      # Optional: powers per-player tournament stats and match lineups
+      # (thesportsdb.com). Defaults to the shared test key "123" if unset,
+      # which works but has low per-endpoint rate limits. Get a Patreon key
+      # at https://www.thesportsdb.com/member.php for higher limits, then
+      # set it in the Render Dashboard -> Environment.
+      - key: THESPORTSDB_API_KEY
+        sync: false
     autoDeploy: true

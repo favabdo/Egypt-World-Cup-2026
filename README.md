@@ -33,5 +33,13 @@ The build step runs `vite build` (output in `dist/`), and `npm start` runs `serv
 
 Set these on Render (or in `.env` locally):
 
-- `FOOTBALL_DATA_API_KEY` — powers the live-match card on the Matches page (football-data.org).
-- `API_FOOTBALL_KEY` — powers per-player stats (tap the active player) and the match lineup/statistics modal (tap any match card). Get a free key at https://dashboard.api-football.com/register. Without this key, those two features show a friendly "no data" state instead of breaking.
+- `FOOTBALL_DATA_API_KEY` — powers the live-match card on the Matches page (football-data.org). Get a free key at https://www.football-data.org/client/register. Without it, `/api/egypt-match` returns a 500 and the live-match card falls back to the static placeholder.
+- `THESPORTSDB_API_KEY` — powers per-player tournament stats (tap the active player) and the match lineup/statistics modal (tap any match card), via thesportsdb.com. Optional: defaults to the shared free test key `123`, which works but has very low per-endpoint request limits. Get a Patreon key at https://www.thesportsdb.com/member.php for reliable use in production.
+
+### Player name matching (important)
+
+Both features above match a player by **name**, not by a stable ID — the server takes the name you send it, keeps its last word, and looks for a lineup entry whose name contains it (see `matches()` in `server.js`). This means:
+
+- Each entry in `SQUAD` (`src/App.tsx`) can set an optional `apiName` — the player's exact real/registered name as listed on TheSportsDB (search at https://www.thesportsdb.com/search.php?s=). Set this whenever the local nickname/file name doesn't closely resemble the player's real name; otherwise stats for that player will never resolve, no matter how correctly the API keys are configured.
+- Likewise, `EGYPT_TOURNAMENT_MATCHES` in `server.js` must list the real opponent name and date for each fixture exactly as it would appear in a TheSportsDB event search (`Egypt_vs_<Opponent>`); if the fixture isn't indexed there under that name, its lineup/stats will show "no data" for the whole match, independent of player names.
+- If a squad entry represents someone who isn't an actual professional footballer (e.g. a placeholder/joke entry), no `apiName` will ever produce results — that "no data" state is expected, not a bug.
