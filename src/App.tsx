@@ -546,14 +546,16 @@ export default function App() {
           opacity: 1,
           zIndex: 20,
         };
-      // The player photo slides here — from dead-center to the side — when
-      // its stats panel is open, instead of a popup covering it.
+      // The player photo slides here when its stats panel is open.
+      // Desktop: shifts left to make room for the panel beside it.
+      // Mobile: moves to the top-center instead — photo, name and stats
+      // then read as one stacked column instead of photo-left/panel-right.
       case 'statsFocus':
         return {
           ...baseStyle,
-          left: isMobile ? '26%' : '22%',
-          bottom: isMobile ? '4%' : '0',
-          height: isMobile ? '46%' : '82%',
+          left: isMobile ? '50%' : '22%',
+          bottom: isMobile ? '50%' : '0',
+          height: isMobile ? '38%' : '82%',
           transform: `translateX(-50%) scale(${isMobile ? 1 : 1.05})`,
           filter: 'blur(0px)',
           opacity: 1,
@@ -1034,10 +1036,10 @@ export default function App() {
         <div
           className={`absolute z-40 text-white transition-all duration-500 ease-out ${
             statsOpen ? 'opacity-100 translate-x-0 pointer-events-auto' : 'opacity-0 translate-x-4 pointer-events-none'
-          }`}
+          } ${isMobile ? 'text-center' : ''}`}
           style={
             isMobile
-              ? { left: '8%', right: '8%', top: '54%', bottom: '10%' }
+              ? { left: '8%', right: '8%', top: '52%', bottom: '4%' }
               : { left: '46%', right: '7%', top: '18%', bottom: '14%' }
           }
         >
@@ -1063,7 +1065,7 @@ export default function App() {
           )}
 
           {!statsLoading && statsData && (
-            <div className="grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md">
+            <div className={`grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md ${isMobile ? 'mx-auto' : ''}`}>
               {[
                 { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
                 { icon: Footprints, label: t('touches'), value: statsData.touches },
@@ -1072,7 +1074,7 @@ export default function App() {
                 { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
                 { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
               ].map((row, idx) => (
-                <div key={idx} className="rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5">
+                <div key={idx} className={`rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5 ${isMobile ? 'items-center' : ''}`}>
                   <row.icon size={16} className="text-white/50" strokeWidth={2} />
                   <span className="text-xl sm:text-2xl font-bold font-mono">{row.value}</span>
                   <span className="text-[9.5px] sm:text-[10px] uppercase tracking-wide text-white/50">{row.label}</span>
