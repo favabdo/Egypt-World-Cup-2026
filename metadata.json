@@ -1,0 +1,6 @@
+{
+  "name": "TOONHUB",
+  "description": "A single full-viewport hero section featuring a 3D character-figurine carousel with smooth crossfades and dynamic background color transitions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
