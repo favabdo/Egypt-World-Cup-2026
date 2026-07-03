@@ -55,40 +55,40 @@ const normalizePlayerColors = (p: any) => {
 // (without extension), so the two stay in sync automatically.
 // "number" is the player's real shirt number (or role, e.g. "COACH").
 // Leave a player's number as null until it's confirmed.
-const SQUAD: { file: string; number: string | null }[] = [
-  { file: 'AbdelMoneim', number: '6' },
-  { file: 'adel', number: '20' },
+const SQUAD: { file: string; number: string | null; displayName?: string }[] = [
+  { file: 'hassan', number: 'COACH' },
+  { file: 'sheno', number: '1' },
+  { file: 'Shobeir', number: '23' },
+  { file: 'mahdy', number: '16' },
   { file: 'alaa', number: '26' },
-  { file: 'donga', number: '18' },
+  { file: 'yasser', number: '2' },
+  { file: "Rabi'a", number: '5' },
+  { file: 'AbdelMoneim', number: '6', displayName: 'Moneim' },
+  { file: 'hossam', number: '4' },
+  { file: 'hany', number: '3' },
+  { file: 'tarek', number: '24' },
+  { file: 'fatouh', number: '13' },
+  { file: 'kareem', number: '15' },
+  { file: 'Marwan', number: '19' },
   { file: 'emam', number: '8' },
   { file: 'fathy', number: '14' },
-  { file: 'fatouh', number: null },
-  { file: 'haitham', number: null },
-  { file: 'hamza', number: null },
-  { file: 'hany', number: null },
-  { file: 'hassan', number: 'COACH' },
-  { file: 'hossam', number: null },
-  { file: 'kareem', number: null },
-  { file: 'mahdy', number: null },
-  { file: 'Marmoush', number: null },
-  { file: 'Marwan', number: null },
-  { file: 'mohaned', number: null },
-  { file: "Rabi'a", number: null },
-  { file: 'saber', number: null },
-  { file: 'salah', number: null },
-  { file: 'sheno', number: null },
-  { file: 'Shobeir', number: null },
-  { file: 'tarek', number: null },
-  { file: 'Trezeguet', number: null },
-  { file: 'yasser', number: null },
-  { file: 'Zico', number: null },
-  { file: 'zizo', number: null },
+  { file: 'mohaned', number: '17' },
+  { file: 'saber', number: '21' },
+  { file: 'donga', number: '18' },
+  { file: 'adel', number: '20' },
+  { file: 'haitham', number: '12' },
+  { file: 'zizo', number: '25' },
+  { file: 'Zico', number: '11' },
+  { file: 'Trezeguet', number: '7' },
+  { file: 'salah', number: '10' },
+  { file: 'hamza', number: '9' },
+  { file: 'Marmoush', number: '22' },
 ];
 
 const createDefaultPlayers = () => {
   return SQUAD.map((p, index) => ({
     id: index + 1,
-    name: p.file,
+    name: p.displayName || p.file,
     number: p.number,
     src: `/${p.file}.png`,
     bg: '#5c2828',
@@ -305,7 +305,7 @@ export default function App() {
   const displayName = activeItem.name.trim().toUpperCase() || `PLAYER ${activeItem.id}`;
   // Jersey number (or role, e.g. "COACH") shown next to the player's name — not the slot order
   const jerseyLabel = activeItem.number
-    ? (/^\d+$/.test(String(activeItem.number)) ? `#${activeItem.number}` : String(activeItem.number).toUpperCase())
+    ? (/^\d+$/.test(String(activeItem.number)) ? String(activeItem.number) : String(activeItem.number).toUpperCase())
     : '';
 
   const isArabic = /[\u0600-\u06FF]/.test(displayName);
