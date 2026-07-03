@@ -9,17 +9,12 @@ import {
   ArrowRight,
   X,
   Clock,
+  Footprints,
   Target,
   Handshake,
+  Sparkles,
   Shield,
   Languages,
-  Users,
-  PlayCircle,
-  Square,
-  Trophy,
-  CalendarDays,
-  Minus,
-  MapPin,
 } from 'lucide-react';
 
 // Preset background & panel color combinations
@@ -69,8 +64,8 @@ const normalizePlayerColors = (p: any) => {
 // "number" is the player's real shirt number (or role, e.g. "COACH").
 // Leave a player's number as null until it's confirmed.
 const SQUAD: { file: string; number: string | null; displayName?: string }[] = [
-  { file: 'Hassan', number: 'COACH' },
-  { file: 'Sheno', number: '1' },
+  { file: 'hassan', number: 'COACH' },
+  { file: 'sheno', number: '1' },
   { file: 'Shobeir', number: '23' },
   { file: 'mahdy', number: '16' },
   { file: 'alaa', number: '26' },
@@ -270,42 +265,23 @@ const STRINGS = {
     ar: 'هذا الموقع غير رسمي وغير تابع للاتحاد المصري لكرة القدم. تصميم عبدالله الصاوي',
     en: 'This website is unofficial and not affiliated with the Egyptian Football Association. Designed by Abdullah ElSawy',
   },
-  // Player stats panel — tournament-wide totals (TheSportsDB), not one match
-  playerStats: { ar: 'إحصائيات اللاعب طوال البطولة', en: 'Tournament Stats' },
-  coachStats: { ar: 'إحصائيات المدرب طوال البطولة', en: "Coach's Tournament Record" },
-  appearances: { ar: 'المشاركات', en: 'Appearances' },
-  starts: { ar: 'أساسي', en: 'Starts' },
-  minutesPlayed: { ar: 'الدقائق (تقريبي)', en: 'Minutes (approx.)' },
+  // Player stats panel
+  playerStats: { ar: 'إحصائيات اللاعب', en: 'Player Stats' },
+  minutesPlayed: { ar: 'الدقائق الملعوبة', en: 'Minutes Played' },
   touches: { ar: 'اللمسات', en: 'Touches' },
   goalsLabel: { ar: 'الأهداف', en: 'Goals' },
   assistsLabel: { ar: 'الأسيست', en: 'Assists' },
   chancesCreated: { ar: 'الفرص الممنوحة', en: 'Chances Created' },
   defensiveActions: { ar: 'التدخلات الدفاعية', en: 'Defensive Actions' },
-  yellowCards: { ar: 'كروت صفراء', en: 'Yellow Cards' },
-  redCards: { ar: 'كروت حمراء', en: 'Red Cards' },
-  cleanSheets: { ar: 'شباك نظيفة', en: 'Clean Sheets' },
-  matchesPlayed: { ar: 'عدد المباريات', en: 'Matches' },
-  wins: { ar: 'فوز', en: 'Wins' },
-  draws: { ar: 'تعادل', en: 'Draws' },
-  losses: { ar: 'خسارة', en: 'Losses' },
-  goalsFor: { ar: 'أهداف له', en: 'Goals For' },
-  goalsAgainst: { ar: 'أهداف عليه', en: 'Goals Against' },
-  posGK: { ar: 'حارس مرمى', en: 'Goalkeeper' },
-  posDEF: { ar: 'مدافع', en: 'Defender' },
-  posMID: { ar: 'وسط', en: 'Midfielder' },
-  posFWD: { ar: 'مهاجم', en: 'Forward' },
-  noStatsData: { ar: 'لا توجد بيانات متاحة حتى الآن — هتظهر أول ما التشكيل يتنشر', en: 'No data available yet — it will appear once lineups are published' },
+  noStatsData: { ar: 'لا توجد بيانات متاحة لهذا اللاعب حاليًا', en: 'No data available for this player yet' },
   loadingStats: { ar: 'جاري تحميل الإحصائيات...', en: 'Loading stats...' },
-  // Full match page (replaces the old lineup popup)
+  // Lineup modal
   lineupTitle: { ar: 'التشكيل الأساسي', en: 'Starting XI' },
   substitutesTitle: { ar: 'البدلاء', en: 'Substitutes' },
   cameOn: { ar: 'شارك', en: 'came on' },
   matchStats: { ar: 'إحصائيات المباراة', en: 'Match Stats' },
-  matchEvents: { ar: 'أحداث المباراة', en: 'Match Events' },
   noLineupData: { ar: 'التشكيل غير متاح حاليًا لهذه المباراة', en: 'Lineup not available for this match yet' },
-  loadingLineup: { ar: 'جاري تحميل بيانات المباراة...', en: 'Loading match data...' },
-  backToMatches: { ar: 'رجوع للمباريات', en: 'Back to Matches' },
-  venueLabel: { ar: 'الملعب', en: 'Venue' },
+  loadingLineup: { ar: 'جاري تحميل التشكيل...', en: 'Loading lineup...' },
 };
 
 export default function App() {
@@ -315,42 +291,7 @@ export default function App() {
 
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
-  // Read the real viewport width on the very first render (not after mount)
-  // so the carousel paints directly in its correct mobile/desktop position.
-  // Previously this started as `false` (desktop) on every device and only
-  // flipped to the real value inside a useEffect after mount — on phones
-  // that meant the active card was laid out at the desktop coordinates for
-  // one frame, then animated (thanks to the transform/left/bottom
-  // transition) over to the correct mobile coordinates. That's the "two
-  // jumps" bug: a wrong first placement immediately followed by a
-  // self-correcting slide. Computing it eagerly here means mobile visitors
-  // get the right layout on frame one, so there's nothing left to correct.
-  const [isMobile, setIsMobile] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.innerWidth < 640
-  );
-  // Guards the very first paint of the carousel. While this is false, the
-  // active card renders with NO css transition, so whatever its style
-  // resolves to on frame one is shown instantly with no motion at all — no
-  // sliding in from the wrong spot. Once the browser has actually painted
-  // that first frame, we flip this to true and every position change after
-  // that (tapping a card, next/prev, resize, stats open/close) animates
-  // smoothly like before. Using two nested requestAnimationFrame calls
-  // (rather than a plain effect) makes sure we wait for a real committed
-  // paint, not just a React commit, before turning transitions back on —
-  // otherwise the enable-transition render and the correct-position render
-  // can land in the same paint and still produce a one-frame slide.
-  const [layoutReady, setLayoutReady] = useState(false);
-  useEffect(() => {
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setLayoutReady(true));
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
-  }, []);
-
+  const [isMobile, setIsMobile] = useState<boolean>(false);
   const [selectedSection, setSelectedSection] = useState<string>('team');
   const [liveMatch, setLiveMatch] = useState<EgyptMatchApiResponse>(null);
   const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
@@ -359,34 +300,23 @@ export default function App() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
   const t = useCallback((key: keyof typeof STRINGS) => STRINGS[key][lang], [lang]);
 
-  // Player / coach stats panel (opens when tapping the centered/active card).
-  // Stats are tournament-wide totals pulled live from TheSportsDB — not a
-  // fixed snapshot of one match — aggregated across every Egypt fixture.
+  // Player stats panel (opens when tapping the centered/active player)
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState(false);
-  const [isCoachStats, setIsCoachStats] = useState(false);
   const [statsData, setStatsData] = useState<null | {
-    // player shape
-    name?: string; position?: 'GK' | 'DEF' | 'MID' | 'FWD';
-    appearances?: number; starts?: number; minutes?: number;
-    goals?: number; assists?: number; yellowCards?: number; redCards?: number; cleanSheets?: number;
-    // coach shape
-    matchesPlayed?: number; wins?: number; draws?: number; losses?: number;
-    goalsFor?: number; goalsAgainst?: number;
+    name: string; minutes: number; touches: number; goals: number;
+    assists: number; chancesCreated: number; defensiveActions: number;
   }>(null);
   const [statsPlayerName, setStatsPlayerName] = useState('');
 
-  const openPlayerStats = useCallback((player: { name: string; number: string | null }) => {
-    const coach = player.number === 'COACH';
-    setIsCoachStats(coach);
+  const openPlayerStats = useCallback((player: { name: string }) => {
     setStatsPlayerName(player.name);
     setStatsOpen(true);
     setStatsLoading(true);
     setStatsError(false);
     setStatsData(null);
-    const url = coach ? '/api/coach-stats' : `/api/player-tournament-stats?name=${encodeURIComponent(player.name)}`;
-    fetch(url)
+    fetch(`/api/player-stats?name=${encodeURIComponent(player.name)}`)
       .then((r) => r.json())
       .then((d) => {
         if (d && d.available) setStatsData(d);
@@ -396,19 +326,20 @@ export default function App() {
       .finally(() => setStatsLoading(false));
   }, []);
 
-  // Full match page (replaces the old bottom-sheet lineup popup). Opening a
-  // match now swaps the whole view to a dedicated page instead of a modal.
-  const [matchPage, setMatchPage] = useState<null | { isoDate: string; opponent: string }>(null);
+  // Match lineup modal (opens when tapping a match card on the Matches page)
+  const [lineupOpen, setLineupOpen] = useState(false);
   const [lineupLoading, setLineupLoading] = useState(false);
   const [lineupError, setLineupError] = useState(false);
   const [lineupData, setLineupData] = useState<any>(null);
+  const [lineupOpponent, setLineupOpponent] = useState('');
 
-  const openMatchPage = useCallback((isoDate: string, opponent: string) => {
-    setMatchPage({ isoDate, opponent });
+  const openLineup = useCallback((isoDate: string, opponent: string) => {
+    setLineupOpponent(opponent);
+    setLineupOpen(true);
     setLineupLoading(true);
     setLineupError(false);
     setLineupData(null);
-    fetch(`/api/match-full?date=${encodeURIComponent(isoDate)}&opponent=${encodeURIComponent(opponent)}`)
+    fetch(`/api/match-lineup?date=${encodeURIComponent(isoDate)}&opponent=${encodeURIComponent(opponent)}`)
       .then((r) => r.json())
       .then((d) => {
         if (d && d.available) setLineupData(d);
@@ -417,8 +348,6 @@ export default function App() {
       .catch(() => setLineupError(true))
       .finally(() => setLineupLoading(false));
   }, []);
-
-  const closeMatchPage = useCallback(() => setMatchPage(null), []);
 
   // Reset activeIndex to 0 when section changes
   useEffect(() => {
@@ -597,9 +526,7 @@ export default function App() {
 
   // 3D positioning styles per role in the carousel
   const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back' | 'statsFocus') => {
-    const transition = layoutReady
-      ? 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)'
-      : 'none';
+    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)';
     const baseStyle = {
       position: 'absolute' as const,
       aspectRatio: '0.6 / 1',
@@ -619,16 +546,14 @@ export default function App() {
           opacity: 1,
           zIndex: 20,
         };
-      // The player photo slides here when its stats panel is open.
-      // Desktop: shifts left to make room for the panel beside it.
-      // Mobile: moves to the top-center instead — photo, name and stats
-      // then read as one stacked column instead of photo-left/panel-right.
+      // The player photo slides here — from dead-center to the side — when
+      // its stats panel is open, instead of a popup covering it.
       case 'statsFocus':
         return {
           ...baseStyle,
-          left: isMobile ? '50%' : '22%',
-          bottom: isMobile ? '50%' : '0',
-          height: isMobile ? '38%' : '82%',
+          left: isMobile ? '26%' : '22%',
+          bottom: isMobile ? '4%' : '0',
+          height: isMobile ? '46%' : '82%',
           transform: `translateX(-50%) scale(${isMobile ? 1 : 1.05})`,
           filter: 'blur(0px)',
           opacity: 1,
@@ -728,7 +653,7 @@ export default function App() {
 
   return (
     <div 
-      className="relative w-full overflow-hidden select-none app-viewport"
+      className="relative w-full overflow-hidden select-none min-h-screen"
       style={{ 
         backgroundColor: pageBg,
         transition: 'background-color 650ms cubic-bezier(0.4, 0, 0.2, 1)',
@@ -736,7 +661,7 @@ export default function App() {
       }}
     >
       <div 
-        className="relative w-full app-stage overflow-hidden"
+        className="relative w-full h-screen overflow-hidden"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -871,19 +796,6 @@ export default function App() {
 
             const style = getRoleStyle(role);
 
-            // Only mount the <img> for slides within 2 steps of the active
-            // one (max 5 concurrent photos) instead of the whole squad.
-            // Keeps a 1-step buffer on each side so the *next* left/right
-            // slide is already loaded by the time it becomes visible —
-            // avoids loading all ~27 photos (≈20MB) up front, which was
-            // the main cause of navigation feeling heavy, especially on
-            // mobile.
-            const circularDistance = Math.min(
-              Math.abs(i - activeIndex),
-              total - Math.abs(i - activeIndex)
-            );
-            const shouldLoadImage = circularDistance <= 2;
-
             return (
               <div 
                 key={item.id} 
@@ -904,16 +816,14 @@ export default function App() {
                   }
                 }}
               >
-                {shouldLoadImage && (
-                  <img 
-                    src={item.src} 
-                    alt={item.name}
-                    className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
-                    draggable={false}
-                    decoding="async"
-                    fetchPriority={i === activeIndex ? 'high' : 'low'}
-                  />
-                )}
+                <img 
+                  src={item.src} 
+                  alt={item.name}
+                  className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
+                  draggable={false}
+                  decoding="async"
+                  fetchPriority={i === activeIndex ? 'high' : 'low'}
+                />
               </div>
             );
           })}
@@ -941,7 +851,7 @@ export default function App() {
 
             {/* Live knockout match */}
             <div
-              onClick={() => openMatchPage(LIVE_MATCH.isoDate, liveDisplay.opponent)}
+              onClick={() => openLineup(LIVE_MATCH.isoDate, liveDisplay.opponent)}
               className="w-full max-w-md rounded-2xl border border-red-400/40 bg-white/10 backdrop-blur-lg p-5 sm:p-6 text-white shadow-lg shadow-black/20 cursor-pointer hover:bg-white/15 transition-colors duration-200"
             >
               <div className="flex items-center justify-between mb-3">
@@ -988,7 +898,7 @@ export default function App() {
               {GROUP_MATCHES.map((m) => (
                 <div
                   key={m.id}
-                  onClick={() => openMatchPage(m.isoDate, m.opponent)}
+                  onClick={() => openLineup(m.isoDate, m.opponent)}
                   className="rounded-2xl border border-white/15 bg-white/5 backdrop-blur-lg p-4 sm:p-5 text-white flex flex-col items-center gap-2 hover:bg-white/10 transition-colors duration-200 cursor-pointer"
                 >
                   <span className="text-[10px] font-mono tracking-widest text-white/50">{m.matchday}</span>
@@ -1031,9 +941,7 @@ export default function App() {
         {isTeamPage && (
         <div 
           id="nav-section-left"
-          className={`absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white transition-opacity duration-300 ${
-            statsOpen && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
-          }`}
+          className="absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white pointer-events-auto"
         >
           <p className={`font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] flex items-baseline gap-3 transition-opacity duration-300 ${statsOpen ? 'opacity-0' : 'opacity-95'}`}>
             <span>{displayName}</span>
@@ -1109,10 +1017,10 @@ export default function App() {
         <div
           className={`absolute z-40 text-white transition-all duration-500 ease-out ${
             statsOpen ? 'opacity-100 translate-x-0 pointer-events-auto' : 'opacity-0 translate-x-4 pointer-events-none'
-          } ${isMobile ? 'text-center' : ''}`}
+          }`}
           style={
             isMobile
-              ? { left: '8%', right: '8%', top: '52%', bottom: '4%' }
+              ? { left: '8%', right: '8%', top: '54%', bottom: '10%' }
               : { left: '46%', right: '7%', top: '18%', bottom: '14%' }
           }
         >
@@ -1124,18 +1032,10 @@ export default function App() {
             <X size={16} />
           </button>
 
-          <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">
-            {isCoachStats ? t('coachStats') : t('playerStats')}
-          </p>
-          <h3 className="font-display uppercase text-xl sm:text-3xl font-black tracking-tight mb-1 pe-10">
+          <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">{t('playerStats')}</p>
+          <h3 className="font-display uppercase text-xl sm:text-3xl font-black tracking-tight mb-4 sm:mb-6 pe-10">
             {statsPlayerName}
           </h3>
-          {!isCoachStats && statsData?.position && (
-            <p className="text-[10px] sm:text-xs text-white/50 font-mono mb-4 sm:mb-6">
-              {t(`pos${statsData.position}` as keyof typeof STRINGS)}
-            </p>
-          )}
-          {(isCoachStats || !statsData?.position) && <div className="mb-4 sm:mb-6" />}
 
           {statsLoading && (
             <div className="text-sm text-white/60">{t('loadingStats')}</div>
@@ -1146,37 +1046,18 @@ export default function App() {
           )}
 
           {!statsLoading && statsData && (
-            <div className={`grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md ${isMobile ? 'mx-auto' : ''}`}>
-              {(isCoachStats
-                ? [
-                    { icon: CalendarDays, label: t('matchesPlayed'), value: statsData.matchesPlayed },
-                    { icon: Trophy, label: t('wins'), value: statsData.wins },
-                    { icon: Minus, label: t('draws'), value: statsData.draws },
-                    { icon: X, label: t('losses'), value: statsData.losses },
-                    { icon: Target, label: t('goalsFor'), value: statsData.goalsFor },
-                    { icon: Shield, label: t('goalsAgainst'), value: statsData.goalsAgainst },
-                  ]
-                : statsData.position === 'GK'
-                ? [
-                    { icon: Users, label: t('appearances'), value: statsData.appearances },
-                    { icon: PlayCircle, label: t('starts'), value: statsData.starts },
-                    { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
-                    { icon: Shield, label: t('cleanSheets'), value: statsData.cleanSheets },
-                    { icon: Square, label: t('yellowCards'), value: statsData.yellowCards },
-                    { icon: Square, label: t('redCards'), value: statsData.redCards },
-                  ]
-                : [
-                    { icon: Users, label: t('appearances'), value: statsData.appearances },
-                    { icon: PlayCircle, label: t('starts'), value: statsData.starts },
-                    { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
-                    { icon: Target, label: t('goalsLabel'), value: statsData.goals },
-                    { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
-                    { icon: Square, label: t('yellowCards'), value: statsData.yellowCards },
-                  ]
-              ).map((row, idx) => (
-                <div key={idx} className={`rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5 ${isMobile ? 'items-center' : ''}`}>
+            <div className="grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md">
+              {[
+                { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
+                { icon: Footprints, label: t('touches'), value: statsData.touches },
+                { icon: Target, label: t('goalsLabel'), value: statsData.goals },
+                { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
+                { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
+                { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
+              ].map((row, idx) => (
+                <div key={idx} className="rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5">
                   <row.icon size={16} className="text-white/50" strokeWidth={2} />
-                  <span className="text-xl sm:text-2xl font-bold font-mono">{row.value ?? 0}</span>
+                  <span className="text-xl sm:text-2xl font-bold font-mono">{row.value}</span>
                   <span className="text-[9.5px] sm:text-[10px] uppercase tracking-wide text-white/50">{row.label}</span>
                 </div>
               ))}
@@ -1185,152 +1066,105 @@ export default function App() {
         </div>
         )}
 
-        {/* Full Match Page — replaces the old popup. Covers the whole
-            viewport and scrolls on its own, with an explicit back button,
-            instead of opening in a modal over the carousel. */}
-        {matchPage && (
+        {/* Match Lineup Modal */}
+        <div
+          className={`fixed inset-0 z-[95] flex items-end sm:items-center justify-center transition-opacity duration-300 ${
+            lineupOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+          }`}
+          dir={lang === 'ar' ? 'rtl' : 'ltr'}
+        >
           <div
-            className="fixed inset-0 z-[95] overflow-y-auto bg-[#0d1712] text-white"
-            dir={lang === 'ar' ? 'rtl' : 'ltr'}
+            onClick={() => setLineupOpen(false)}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          />
+          <div
+            className={`relative w-full sm:max-w-2xl max-h-[88vh] overflow-y-auto bg-[#12201a]/90 border border-white/15 backdrop-blur-2xl rounded-t-3xl sm:rounded-3xl p-5 sm:p-7 text-white shadow-2xl transition-transform duration-400 ease-out ${
+              lineupOpen ? 'translate-y-0' : 'translate-y-full sm:translate-y-10'
+            }`}
           >
-            <div className="max-w-3xl mx-auto px-4 sm:px-8 py-6 sm:py-10">
-              <button
-                onClick={closeMatchPage}
-                className="flex items-center gap-2 text-xs sm:text-sm font-bold uppercase tracking-widest text-white/70 hover:text-white transition-colors mb-6"
-              >
-                {lang === 'ar' ? <ArrowRight size={16} /> : <ArrowLeft size={16} />}
-                {t('backToMatches')}
-              </button>
+            <button
+              onClick={() => setLineupOpen(false)}
+              aria-label="Close"
+              className="absolute top-4 end-4 w-8 h-8 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 transition-colors z-10"
+            >
+              <X size={16} />
+            </button>
 
-              <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">🇪🇬 vs {matchPage.opponent}</p>
-              <h3 className="font-display uppercase text-2xl sm:text-4xl font-black tracking-tight mb-1">
-                {t('lineupTitle')}{lineupData?.formation ? ` · ${lineupData.formation}` : ''}
-              </h3>
-              {lineupData?.score && (lineupData.score.egypt != null) && (
-                <p className="font-mono text-lg sm:text-xl text-white/80 mb-1">
-                  {lineupData.egyptIsHome
-                    ? `Egypt ${lineupData.score.egypt} — ${lineupData.score.opponent} ${lineupData.opponentName}`
-                    : `${lineupData.opponentName} ${lineupData.score.opponent} — ${lineupData.score.egypt} Egypt`}
-                </p>
-              )}
-              {lineupData?.venue && (
-                <p className="flex items-center gap-1.5 text-xs text-white/50 font-mono mb-6">
-                  <MapPin size={12} /> {t('venueLabel')}: {lineupData.venue}
-                </p>
-              )}
-              {!lineupData?.venue && <div className="mb-6" />}
+            <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-1">🇪🇬 vs {lineupOpponent}</p>
+            <h3 className="font-display uppercase text-xl sm:text-2xl font-black tracking-tight mb-5">
+              {t('lineupTitle')}{lineupData?.formation ? ` · ${lineupData.formation}` : ''}
+            </h3>
 
-              {lineupLoading && (
-                <div className="py-10 text-center text-sm text-white/60">{t('loadingLineup')}</div>
-              )}
+            {lineupLoading && (
+              <div className="py-10 text-center text-sm text-white/60">{t('loadingLineup')}</div>
+            )}
 
-              {!lineupLoading && (lineupError || !lineupData) && (
-                <div className="py-10 text-center text-sm text-white/60">{t('noLineupData')}</div>
-              )}
+            {!lineupLoading && (lineupError || !lineupData) && (
+              <div className="py-10 text-center text-sm text-white/60">{t('noLineupData')}</div>
+            )}
 
-              {!lineupLoading && lineupData && (
-                <>
-                  {/* Pitch board */}
-                  <LineupPitch startXI={lineupData.startXI} lang={lang} t={t} />
+            {!lineupLoading && lineupData && (
+              <>
+                {/* Pitch board */}
+                <LineupPitch startXI={lineupData.startXI} />
 
-                  {/* Substitutes */}
-                  {lineupData.substitutes?.length > 0 && (
-                    <div className="mt-6">
-                      <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-2">
-                        {t('substitutesTitle')}
-                      </p>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {lineupData.substitutes.map((s: any, idx: number) => {
-                          const photo = localPhotoFor(s.name);
-                          return (
-                            <div key={idx} className="flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 p-2">
-                              {photo ? (
-                                <img src={photo.src} alt={s.name} className="w-8 h-8 rounded-full object-cover object-top bg-white/10" />
-                              ) : (
-                                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] font-bold">
-                                  {initialsFor(s.name)}
-                                </div>
-                              )}
-                              <div className="flex flex-col min-w-0">
-                                <span className="text-xs font-semibold truncate">{s.name}</span>
-                                {s.cameOn && (
-                                  <span className="text-[9px] text-emerald-300 uppercase tracking-wide">
-                                    {t('cameOn')}{s.cameOnMinute != null ? ` · ${s.cameOnMinute}'` : ''}
-                                  </span>
-                                )}
+                {/* Substitutes */}
+                {lineupData.substitutes?.length > 0 && (
+                  <div className="mt-6">
+                    <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-2">
+                      {t('substitutesTitle')}
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {lineupData.substitutes.map((s: any, idx: number) => {
+                        const photo = localPhotoFor(s.name);
+                        return (
+                          <div key={idx} className="flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 p-2">
+                            {photo ? (
+                              <img src={photo.src} alt={s.name} className="w-8 h-8 rounded-full object-cover object-top bg-white/10" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] font-bold">
+                                {initialsFor(s.name)}
                               </div>
+                            )}
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-xs font-semibold truncate">{s.name}</span>
+                              {s.cameOn && (
+                                <span className="text-[9px] text-emerald-300 uppercase tracking-wide">{t('cameOn')}</span>
+                              )}
                             </div>
-                          );
-                        })}
-                      </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {/* Match statistics (team-level, from TheSportsDB) */}
-                  {lineupData.teamStats?.length > 0 && (
-                    <div className="mt-8">
-                      <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-3">
-                        {t('matchStats')}
-                      </p>
-                      <div className="flex flex-col gap-3">
-                        {lineupData.teamStats.map((s: any, idx: number) => (
-                          <StatBar key={idx} label={s.type} egypt={s.egypt} opponent={s.opponent} />
-                        ))}
-                      </div>
+                {/* Match statistics */}
+                {lineupData.statistics?.length > 0 && (
+                  <div className="mt-6">
+                    <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-3">
+                      {t('matchStats')}
+                    </p>
+                    <div className="flex flex-col gap-3">
+                      {lineupData.statistics.map((s: any, idx: number) => (
+                        <StatBar key={idx} label={s.type} egypt={s.egypt} opponent={s.opponent} />
+                      ))}
                     </div>
-                  )}
-
-                  {/* Match events timeline — goals / cards / subs, for the
-                      "more stats" full-page view */}
-                  {lineupData.timeline?.length > 0 && (
-                    <div className="mt-8 mb-4">
-                      <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-3">
-                        {t('matchEvents')}
-                      </p>
-                      <div className="flex flex-col gap-2">
-                        {lineupData.timeline.map((ev: any, idx: number) => {
-                          const icon = ev.type === 'goal' ? '⚽' : ev.type === 'card' ? (String(ev.detail).toLowerCase().includes('red') ? '🟥' : '🟨') : '🔄';
-                          const label =
-                            ev.type === 'goal'
-                              ? `${ev.playerName}${ev.assistName ? ` (${ev.assistName})` : ''}`
-                              : ev.type === 'card'
-                              ? `${ev.playerName} · ${ev.detail || ''}`
-                              : `${ev.assistName || ''} ${lang === 'ar' ? 'بدل' : 'on for'} ${ev.playerName || ''}`;
-                          return (
-                            <div key={idx} className="flex items-center gap-3 text-xs sm:text-sm rounded-lg bg-white/5 border border-white/10 px-3 py-2">
-                              <span className="font-mono text-white/50 w-8 shrink-0">{ev.minute}'</span>
-                              <span>{icon}</span>
-                              <span className={`truncate ${ev.isEgypt ? 'text-white' : 'text-white/50'}`}>{label}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
 }
 
-// Renders the starting XI on a schematic pitch. The "grid" (row:col) is
-// synthesized server-side from each player's TheSportsDB position text
-// (GK/DEF/MID/FWD buckets), so every player with a recognized position
-// always gets placed — falls back gracefully to an initials avatar when a
-// player has no local photo.
-function LineupPitch({
-  startXI,
-  lang,
-  t,
-}: {
-  startXI: { name: string; number: string | null; pos: string | null; grid: string | null; bucket?: string }[];
-  lang?: 'ar' | 'en';
-  t?: (key: keyof typeof STRINGS) => string;
-}) {
+// Renders the starting XI on a schematic pitch using each player's
+// API-FOOTBALL "grid" position (row:col), falling back gracefully when
+// a player has no local photo (initials avatar instead).
+function LineupPitch({ startXI }: { startXI: { name: string; number: string | null; pos: string | null; grid: string | null }[] }) {
   const withGrid = (startXI || []).filter((p) => p.grid);
   const rows = withGrid.map((p) => Number(p.grid!.split(':')[0]));
   const maxRow = rows.length ? Math.max(...rows) : 1;
@@ -1379,11 +1213,6 @@ function LineupPitch({
             <span className="text-[8.5px] sm:text-[9.5px] font-semibold text-white text-center leading-tight max-w-full truncate px-0.5 bg-black/30 rounded">
               {p.name?.split(' ').slice(-1)[0]}
             </span>
-            {p.bucket && t && (
-              <span className="text-[7px] sm:text-[8px] text-white/60 font-mono uppercase tracking-wide">
-                {t(`pos${p.bucket}` as keyof typeof STRINGS)}
-              </span>
-            )}
           </div>
         );
       })}
