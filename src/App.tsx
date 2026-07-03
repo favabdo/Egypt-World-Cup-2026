@@ -796,6 +796,19 @@ export default function App() {
 
             const style = getRoleStyle(role);
 
+            // Only mount the <img> for slides within 2 steps of the active
+            // one (max 5 concurrent photos) instead of the whole squad.
+            // Keeps a 1-step buffer on each side so the *next* left/right
+            // slide is already loaded by the time it becomes visible —
+            // avoids loading all ~27 photos (≈20MB) up front, which was
+            // the main cause of navigation feeling heavy, especially on
+            // mobile.
+            const circularDistance = Math.min(
+              Math.abs(i - activeIndex),
+              total - Math.abs(i - activeIndex)
+            );
+            const shouldLoadImage = circularDistance <= 2;
+
             return (
               <div 
                 key={item.id} 
@@ -816,14 +829,16 @@ export default function App() {
                   }
                 }}
               >
-                <img 
-                  src={item.src} 
-                  alt={item.name}
-                  className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
-                  draggable={false}
-                  decoding="async"
-                  fetchPriority={i === activeIndex ? 'high' : 'low'}
-                />
+                {shouldLoadImage && (
+                  <img 
+                    src={item.src} 
+                    alt={item.name}
+                    className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
+                    draggable={false}
+                    decoding="async"
+                    fetchPriority={i === activeIndex ? 'high' : 'low'}
+                  />
+                )}
               </div>
             );
           })}
@@ -941,7 +956,9 @@ export default function App() {
         {isTeamPage && (
         <div 
           id="nav-section-left"
-          className="absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white pointer-events-auto"
+          className={`absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white transition-opacity duration-300 ${
+            statsOpen && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
+          }`}
         >
           <p className={`font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] flex items-baseline gap-3 transition-opacity duration-300 ${statsOpen ? 'opacity-0' : 'opacity-95'}`}>
             <span>{displayName}</span>
