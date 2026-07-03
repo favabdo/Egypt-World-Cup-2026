@@ -17,6 +17,12 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Forward /api calls to the Express server (run `npm run dev:api`
+      // alongside `npm run dev`) so the live-match endpoint works locally
+      // too, not just in the built production app.
+      proxy: {
+        '/api': 'http://localhost:8787',
+      },
     },
   };
 });

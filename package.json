@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev:api": "PORT=8787 node server.js",
     "build": "vite build",
     "start": "node server.js",
     "preview": "vite preview",

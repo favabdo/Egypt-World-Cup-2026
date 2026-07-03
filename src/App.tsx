@@ -85,12 +85,99 @@ const SQUAD: { file: string; number: string | null; displayName?: string }[] = [
   { file: 'Marmoush', number: '22' },
 ];
 
+// Egypt's FIFA World Cup 2026 matches — Group G (finished with a squad-club
+// of 1 win, 2 draws, 5 points, finishing 2nd and advancing to the Round of 32).
+// Kickoff times are already localized to Africa/Cairo.
+const GROUP_MATCHES: {
+  id: number;
+  matchday: string;
+  opponent: string;
+  opponentFlag: string;
+  opponentCode: string;
+  home: boolean;
+  egyScore: number;
+  oppScore: number;
+  result: 'W' | 'D' | 'L';
+  date: string;
+  time: string;
+}[] = [
+  {
+    id: 1,
+    matchday: 'MATCHDAY 1',
+    opponent: 'Belgium',
+    opponentFlag: '🇧🇪',
+    opponentCode: 'BEL',
+    home: false,
+    egyScore: 1,
+    oppScore: 1,
+    result: 'D',
+    date: 'Mon, Jun 15',
+    time: '10:00 PM',
+  },
+  {
+    id: 2,
+    matchday: 'MATCHDAY 2',
+    opponent: 'New Zealand',
+    opponentFlag: '🇳🇿',
+    opponentCode: 'NZL',
+    home: false,
+    egyScore: 3,
+    oppScore: 1,
+    result: 'W',
+    date: 'Mon, Jun 22',
+    time: '4:00 AM',
+  },
+  {
+    id: 3,
+    matchday: 'MATCHDAY 3',
+    opponent: 'IR Iran',
+    opponentFlag: '🇮🇷',
+    opponentCode: 'IRN',
+    home: true,
+    egyScore: 1,
+    oppScore: 1,
+    result: 'D',
+    date: 'Sat, Jun 27',
+    time: '6:00 AM',
+  },
+];
+
+// The Round of 32 knockout match — live now. This is the fallback shown
+// while /api/egypt-match hasn't responded yet (or when it's unavailable,
+// e.g. running `vite dev` without `npm run dev:api` alongside it).
+const LIVE_MATCH = {
+  opponent: 'Australia',
+  opponentFlag: '🇦🇺',
+  opponentCode: 'AUS',
+  egyScore: 1,
+  oppScore: 0,
+  stage: 'ROUND OF 32',
+  date: 'Fri, Jul 3',
+  time: '9:00 PM',
+};
+
+// Shape returned by our own /api/egypt-match endpoint (server.js), which
+// proxies football-data.org so the API key never reaches the browser.
+type EgyptMatchApiResponse = {
+  status: string;
+  stage: string | null;
+  group: string | null;
+  utcDate: string;
+  minute: number | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+  homeCrest: string | null;
+  awayCrest: string | null;
+  homeScore: number | null;
+  awayScore: number | null;
+} | null;
+
 const createDefaultPlayers = () => {
   return SQUAD.map((p, index) => ({
     id: index + 1,
     name: p.displayName || p.file,
     number: p.number,
-    src: `/${p.file}.png`,
+    src: `/${p.file}.webp`,
     bg: '#5c2828',
     panel: '#743535'
   }));
@@ -127,6 +214,8 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
   const [isMobile, setIsMobile] = useState<boolean>(false);
   const [selectedSection, setSelectedSection] = useState<string>('team');
+  const [liveMatch, setLiveMatch] = useState<EgyptMatchApiResponse>(null);
+  const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
 
   // Reset activeIndex to 0 when section changes
   useEffect(() => {
@@ -137,12 +226,40 @@ export default function App() {
   const touchStartX = useRef<number>(0);
   const touchEndX = useRef<number>(0);
 
-  // Preload every squad photo on mount so the carousel never flashes empty
+  // Load the first-visible photo (and its immediate neighbors) right away,
+  // then quietly preload the rest in the background so nothing competes
+  // with the initial paint. Firing all 27 requests at once was the actual
+  // bottleneck on first load, not just file size.
   useEffect(() => {
-    players.forEach((p) => {
+    if (players.length === 0) return;
+
+    const priorityIndexes = [0, 1, players.length - 1].filter(
+      (v, i, arr) => v >= 0 && v < players.length && arr.indexOf(v) === i
+    );
+    const priority = priorityIndexes.map((i) => players[i]);
+    const rest = players.filter((_, i) => !priorityIndexes.includes(i));
+
+    priority.forEach((p) => {
       const img = new Image();
       img.src = p.src;
     });
+
+    // Stagger the remaining photos on requestIdleCallback (falls back to a
+    // short timeout) so they load in the background without blocking or
+    // competing with the visible card.
+    const idle: (cb: () => void) => void =
+      (window as any).requestIdleCallback || ((cb: () => void) => setTimeout(cb, 200));
+
+    let cancelled = false;
+    let i = 0;
+    const loadNext = () => {
+      if (cancelled || i >= rest.length) return;
+      const img = new Image();
+      img.src = rest[i].src;
+      i += 1;
+      idle(loadNext);
+    };
+    idle(loadNext);
 
     // Handle isMobile and window resizing
     const checkMobile = () => {
@@ -152,18 +269,52 @@ export default function App() {
     window.addEventListener('resize', checkMobile);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('resize', checkMobile);
     };
   }, []);
 
   // Filter players by active section (سيكشنز)
-  // 'team' shows the full squad carousel. 'matches' is intentionally empty for now.
+  // 'team' shows the full squad carousel. 'matches' has its own dedicated view below.
   const sectionPlayers = useMemo(() => {
     if (selectedSection === 'matches') return [];
     return players;
   }, [players, selectedSection]);
 
   const isTeamPage = selectedSection === 'team';
+  const isMatchesPage = selectedSection === 'matches';
+
+  // Poll our own /api/egypt-match proxy (server.js) for live World Cup data
+  // while the Matches page is open. Stops polling when the user navigates
+  // away. Silently falls back to the static LIVE_MATCH placeholder on error
+  // (e.g. missing API key, or running `vite dev` without `dev:api`).
+  useEffect(() => {
+    if (!isMatchesPage) return;
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/egypt-match');
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: EgyptMatchApiResponse = await res.json();
+        if (!cancelled) {
+          setLiveMatch(data);
+          setLiveMatchError(false);
+        }
+      } catch (err) {
+        if (!cancelled) setLiveMatchError(true);
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 20_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [isMatchesPage]);
 
   // Carousel navigation with 650ms lock for 3D physics ease
   const navigate = useCallback((direction: 'next' | 'prev') => {
@@ -316,6 +467,44 @@ export default function App() {
   // Matches page has no active player yet, so it keeps a fixed neutral background
   const pageBg = isTeamPage ? activeItem.bg : DEFAULT_BG;
 
+  // Normalize whatever we have (live API data, or the static fallback) into
+  // one shape the live-match card can render without branching everywhere.
+  const isLiveStatus = (s: string | undefined) => s === 'LIVE' || s === 'IN_PLAY' || s === 'PAUSED';
+  const liveDisplay = liveMatch
+    ? {
+        isLive: isLiveStatus(liveMatch.status),
+        isFinished: liveMatch.status === 'FINISHED',
+        isUpcoming: liveMatch.status === 'SCHEDULED' || liveMatch.status === 'TIMED',
+        egyptIsHome: liveMatch.homeTeam === 'Egypt',
+        opponent: (liveMatch.homeTeam === 'Egypt' ? liveMatch.awayTeam : liveMatch.homeTeam) || 'TBD',
+        opponentCrest: liveMatch.homeTeam === 'Egypt' ? liveMatch.awayCrest : liveMatch.homeCrest,
+        egyScore: (liveMatch.homeTeam === 'Egypt' ? liveMatch.homeScore : liveMatch.awayScore) ?? '–',
+        oppScore: (liveMatch.homeTeam === 'Egypt' ? liveMatch.awayScore : liveMatch.homeScore) ?? '–',
+        minute: liveMatch.minute,
+        stage: liveMatch.stage || LIVE_MATCH.stage,
+        kickoff: liveMatch.utcDate
+          ? new Date(liveMatch.utcDate).toLocaleString('en-GB', {
+              weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+              timeZone: 'Africa/Cairo',
+            })
+          : `${LIVE_MATCH.date} · ${LIVE_MATCH.time}`,
+        isFallback: false,
+      }
+    : {
+        isLive: true,
+        isFinished: false,
+        isUpcoming: false,
+        egyptIsHome: false,
+        opponent: LIVE_MATCH.opponent,
+        opponentCrest: null as string | null,
+        egyScore: LIVE_MATCH.egyScore,
+        oppScore: LIVE_MATCH.oppScore,
+        minute: null as number | null,
+        stage: LIVE_MATCH.stage,
+        kickoff: `${LIVE_MATCH.date} · ${LIVE_MATCH.time}`,
+        isFallback: true,
+      };
+
   return (
     <div 
       className="relative w-full overflow-hidden select-none min-h-screen"
@@ -447,10 +636,112 @@ export default function App() {
                   alt={item.name}
                   className="absolute inset-0 w-full h-full object-contain object-bottom select-none pointer-events-none transition-transform duration-500 group-hover:scale-105"
                   draggable={false}
+                  decoding="async"
+                  fetchPriority={i === activeIndex ? 'high' : 'low'}
                 />
               </div>
             );
           })}
+        </div>
+        )}
+
+        {/* Matches Page */}
+        {isMatchesPage && (
+        <div className="absolute inset-0 z-3 overflow-y-auto pt-28 sm:pt-36 pb-16 px-4 sm:px-10">
+          <div className="max-w-4xl mx-auto flex flex-col items-center gap-8 sm:gap-10">
+
+            {/* Group summary */}
+            <div className="text-center text-white">
+              <span className="text-[10px] sm:text-xs uppercase tracking-[0.25em] text-white/55 font-mono">
+                GROUP G · 2ND PLACE · QUALIFIED
+              </span>
+              <h2
+                className="font-display uppercase tracking-tighter mt-1"
+                style={{ fontSize: 'clamp(28px, 6vw, 56px)', fontWeight: 900, lineHeight: 0.95 }}
+              >
+                مباريات مصر
+              </h2>
+              <span className="text-xs sm:text-sm text-white/70 font-mono">1W · 2D · 0L — 5 PTS</span>
+            </div>
+
+            {/* Live knockout match */}
+            <div className="w-full max-w-md rounded-2xl border border-red-400/40 bg-white/10 backdrop-blur-lg p-5 sm:p-6 text-white shadow-lg shadow-black/20">
+              <div className="flex items-center justify-between mb-3">
+                {liveDisplay.isLive ? (
+                  <span className="flex items-center gap-1.5 text-[11px] font-bold tracking-widest text-red-400">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    LIVE {liveDisplay.minute ? `· ${liveDisplay.minute}'` : 'NOW'}
+                  </span>
+                ) : liveDisplay.isUpcoming ? (
+                  <span className="text-[11px] font-bold tracking-widest text-white/70">UPCOMING</span>
+                ) : (
+                  <span className="text-[11px] font-bold tracking-widest text-white/50">FULL TIME</span>
+                )}
+                <span className="text-[10px] sm:text-xs font-mono text-white/55">{liveDisplay.stage}</span>
+              </div>
+              <div className="flex items-center justify-between text-center">
+                <div className="flex-1">
+                  <div className="text-3xl sm:text-4xl mb-1">🇪🇬</div>
+                  <div className="text-xs sm:text-sm font-bold uppercase tracking-wide">Egypt</div>
+                </div>
+                <div className="flex-1 font-mono">
+                  <div className="text-2xl sm:text-3xl font-bold">{liveDisplay.egyScore} — {liveDisplay.oppScore}</div>
+                </div>
+                <div className="flex-1">
+                  {liveDisplay.opponentCrest ? (
+                    <img src={liveDisplay.opponentCrest} alt={liveDisplay.opponent} className="w-8 h-8 sm:w-10 sm:h-10 mx-auto mb-1 object-contain" />
+                  ) : (
+                    <div className="text-3xl sm:text-4xl mb-1">{LIVE_MATCH.opponentFlag}</div>
+                  )}
+                  <div className="text-xs sm:text-sm font-bold uppercase tracking-wide">{liveDisplay.opponent}</div>
+                </div>
+              </div>
+              <div className="text-center mt-3 text-[10px] sm:text-xs text-white/50 font-mono">
+                {liveDisplay.kickoff}
+                {(liveDisplay.isFallback || liveMatchError) && ' · static preview'}
+              </div>
+            </div>
+
+            {/* Group-stage matches */}
+            <div className="w-full grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-5">
+              {GROUP_MATCHES.map((m) => (
+                <div
+                  key={m.id}
+                  className="rounded-2xl border border-white/15 bg-white/5 backdrop-blur-lg p-4 sm:p-5 text-white flex flex-col items-center gap-2 hover:bg-white/10 transition-colors duration-200"
+                >
+                  <span className="text-[10px] font-mono tracking-widest text-white/50">{m.matchday}</span>
+
+                  <div className="flex items-center gap-3 sm:gap-4 mt-1">
+                    <div className="flex flex-col items-center">
+                      <span className="text-2xl sm:text-3xl">🇪🇬</span>
+                      <span className="text-[10px] mt-1 font-mono text-white/60">{m.home ? 'HOME' : 'AWAY'}</span>
+                    </div>
+                    <div className="font-mono text-xl sm:text-2xl font-bold">
+                      {m.home ? `${m.egyScore}–${m.oppScore}` : `${m.oppScore}–${m.egyScore}`}
+                    </div>
+                    <div className="flex flex-col items-center">
+                      <span className="text-2xl sm:text-3xl">{m.opponentFlag}</span>
+                      <span className="text-[10px] mt-1 font-mono text-white/60">{m.opponentCode}</span>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`mt-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                      m.result === 'W'
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : m.result === 'D'
+                        ? 'bg-white/15 text-white/80'
+                        : 'bg-red-500/20 text-red-300'
+                    }`}
+                  >
+                    {m.result === 'W' ? 'WIN' : m.result === 'D' ? 'DRAW' : 'LOSS'}
+                  </span>
+
+                  <span className="text-[10px] text-white/45 font-mono">{m.date} · {m.time}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
         )}
 
