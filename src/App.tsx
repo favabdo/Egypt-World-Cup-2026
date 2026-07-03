@@ -692,7 +692,7 @@ export default function App() {
 
   return (
     <div 
-      className="relative w-full overflow-hidden select-none min-h-screen"
+      className="relative w-full overflow-hidden select-none app-viewport"
       style={{ 
         backgroundColor: pageBg,
         transition: 'background-color 650ms cubic-bezier(0.4, 0, 0.2, 1)',
@@ -700,7 +700,7 @@ export default function App() {
       }}
     >
       <div 
-        className="relative w-full h-screen overflow-hidden"
+        className="relative w-full app-stage overflow-hidden"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
