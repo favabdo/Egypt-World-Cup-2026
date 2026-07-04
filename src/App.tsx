@@ -268,11 +268,12 @@ const STRINGS = {
   // Player stats panel
   playerStats: { ar: 'إحصائيات اللاعب', en: 'Player Stats' },
   minutesPlayed: { ar: 'الدقائق الملعوبة', en: 'Minutes Played' },
-  touches: { ar: 'اللمسات', en: 'Touches' },
+  appearancesLabel: { ar: 'المباريات', en: 'Appearances' },
+  startsLabel: { ar: 'أساسي', en: 'Starts' },
   goalsLabel: { ar: 'الأهداف', en: 'Goals' },
   assistsLabel: { ar: 'الأسيست', en: 'Assists' },
-  chancesCreated: { ar: 'الفرص الممنوحة', en: 'Chances Created' },
-  defensiveActions: { ar: 'التدخلات الدفاعية', en: 'Defensive Actions' },
+  yellowCardsLabel: { ar: 'الكروت الصفراء', en: 'Yellow Cards' },
+  cleanSheetsLabel: { ar: 'الشباك النظيفة', en: 'Clean Sheets' },
   noStatsData: { ar: 'لا توجد بيانات متاحة لهذا اللاعب حاليًا', en: 'No data available for this player yet' },
   loadingStats: { ar: 'جاري تحميل الإحصائيات...', en: 'Loading stats...' },
   // Lineup modal
@@ -297,7 +298,7 @@ export default function App() {
   const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
 
   // UI language toggle (site chrome only — player photos/names are unaffected)
-  const [lang, setLang] = useState<'ar' | 'en'>('ar');
+  const [lang, setLang] = useState<'ar' | 'en'>('en');
   const t = useCallback((key: keyof typeof STRINGS) => STRINGS[key][lang], [lang]);
 
   // Player stats panel (opens when tapping the centered/active player)
@@ -305,18 +306,24 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState(false);
   const [statsData, setStatsData] = useState<null | {
-    name: string; minutes: number; touches: number; goals: number;
-    assists: number; chancesCreated: number; defensiveActions: number;
+    name: string; minutes: number; appearances: number; starts: number;
+    goals: number; assists: number; yellowCards: number; cleanSheets: number;
   }>(null);
   const [statsPlayerName, setStatsPlayerName] = useState('');
 
-  const openPlayerStats = useCallback((player: { name: string }) => {
+  // Looked up by shirt/squad number rather than name — our local squad
+  // names (photo filenames, e.g. "salah") rarely match TheSportsDB's full
+  // player names exactly, so matching by number is far more reliable.
+  const openPlayerStats = useCallback((player: { name: string; number?: string | null }) => {
     setStatsPlayerName(player.name);
     setStatsOpen(true);
     setStatsLoading(true);
     setStatsError(false);
     setStatsData(null);
-    fetch(`/api/player-stats?name=${encodeURIComponent(player.name)}`)
+    const query = player.number
+      ? `number=${encodeURIComponent(player.number)}`
+      : `name=${encodeURIComponent(player.name)}`;
+    fetch(`/api/player-tournament-stats?${query}`)
       .then((r) => r.json())
       .then((d) => {
         if (d && d.available) setStatsData(d);
@@ -722,17 +729,7 @@ export default function App() {
                         : 'text-white/70 hover:text-white hover:bg-white/5'
                     }`}
                   >
-                    {lang === 'ar' ? (
-                      <>
-                        <span>{sec.nameAr}</span>
-                        <span className="text-[8.5px] opacity-60 font-mono hidden sm:inline">{sec.nameEn}</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>{sec.nameEn}</span>
-                        <span className="text-[8.5px] opacity-60 font-mono hidden sm:inline">{sec.nameAr}</span>
-                      </>
-                    )}
+                    <span>{lang === 'ar' ? sec.nameAr : sec.nameEn}</span>
                   </button>
                 );
               })}
@@ -1068,11 +1065,11 @@ export default function App() {
             <div className={`grid grid-cols-2 gap-2.5 sm:gap-3 max-w-md ${isMobile ? 'mx-auto' : ''}`}>
               {[
                 { icon: Clock, label: t('minutesPlayed'), value: statsData.minutes },
-                { icon: Footprints, label: t('touches'), value: statsData.touches },
+                { icon: Footprints, label: t('appearancesLabel'), value: statsData.appearances },
                 { icon: Target, label: t('goalsLabel'), value: statsData.goals },
                 { icon: Handshake, label: t('assistsLabel'), value: statsData.assists },
-                { icon: Sparkles, label: t('chancesCreated'), value: statsData.chancesCreated },
-                { icon: Shield, label: t('defensiveActions'), value: statsData.defensiveActions },
+                { icon: Sparkles, label: t('startsLabel'), value: statsData.starts },
+                { icon: Shield, label: t('cleanSheetsLabel'), value: statsData.cleanSheets },
               ].map((row, idx) => (
                 <div key={idx} className={`rounded-2xl bg-white/10 border border-white/15 backdrop-blur-md p-3 sm:p-3.5 flex flex-col gap-1.5 ${isMobile ? 'items-center' : ''}`}>
                   <row.icon size={16} className="text-white/50" strokeWidth={2} />

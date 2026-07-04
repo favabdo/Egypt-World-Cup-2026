@@ -341,13 +341,14 @@ async function getMatchBundle(date, opponent) {
         ...startersRaw.map((p) => ({
           idPlayer: p.idPlayer,
           name: p.name,
+          number: p.number,
           pos: p.pos,
           started: true,
           offMinute: subbedOffMinute.get(String(p.idPlayer)) ?? null,
         })),
         ...substitutes
           .filter((p) => p.cameOn)
-          .map((p) => ({ idPlayer: p.idPlayer, name: p.name, pos: p.pos, started: false, onMinute: p.cameOnMinute })),
+          .map((p) => ({ idPlayer: p.idPlayer, name: p.name, number: p.number, pos: p.pos, started: false, onMinute: p.cameOnMinute })),
       ],
     };
 
@@ -392,22 +393,32 @@ app.get('/api/match-lineup', async (req, res) => {
   }
 });
 
-// GET /api/player-tournament-stats?name=Salah — aggregates a player's
+// GET /api/player-tournament-stats?number=10 — aggregates a player's
 // appearances/starts/minutes/goals/assists/cards across EVERY Egypt match
 // resolved above (not just the latest one), plus a most-common position
 // bucket so the UI can tailor which stats it highlights.
+//
+// Matching is done by shirt/squad number (intSquadNumber from TheSportsDB)
+// rather than by name, since our local squad names (photo filenames) rarely
+// match TheSportsDB's full player names exactly. `name` is still accepted
+// as a fallback for players without a resolvable number (e.g. the coach).
 app.get('/api/player-tournament-stats', async (req, res) => {
+  const number = String(req.query.number || '').trim();
   const name = String(req.query.name || '').trim();
-  if (!name) return res.status(400).json({ available: false, error: 'Missing name' });
+  if (!number && !name) return res.status(400).json({ available: false, error: 'Missing number or name' });
 
-  const cached = tournamentStatsCache.get(name);
+  const cacheKey = number ? `#${number}` : name;
+  const cached = tournamentStatsCache.get(cacheKey);
   if (cached !== undefined) return res.json(cached);
 
   try {
     const bundles = await getAllMatchBundles();
-    const searchTerm = name.split(/\s+/).slice(-1)[0].toLowerCase();
-    const matches = (p) =>
-      p && p.name && (p.name.toLowerCase().includes(searchTerm) || searchTerm.includes(p.name.toLowerCase().split(/\s+/).slice(-1)[0]));
+    const searchTerm = name ? name.split(/\s+/).slice(-1)[0].toLowerCase() : '';
+    const matches = (p) => {
+      if (!p) return false;
+      if (number) return String(p.number || '') === number;
+      return p.name && (p.name.toLowerCase().includes(searchTerm) || searchTerm.includes(p.name.toLowerCase().split(/\s+/).slice(-1)[0]));
+    };
 
     let appearances = 0;
     let starts = 0;
@@ -458,12 +469,12 @@ app.get('/api/player-tournament-stats', async (req, res) => {
 
     if (!anyBundleAvailable) {
       const empty = { available: false, error: 'Could not reach TheSportsDB for any tournament match.' };
-      tournamentStatsCache.set(name, empty);
+      tournamentStatsCache.set(cacheKey, empty);
       return res.json(empty);
     }
     if (appearances === 0) {
-      const empty = { available: false, error: 'Player not found in any resolved lineup yet.' };
-      tournamentStatsCache.set(name, empty);
+      const empty = { available: false, error: number ? `No player with squad number ${number} found in any resolved lineup yet.` : 'Player not found in any resolved lineup yet.' };
+      tournamentStatsCache.set(cacheKey, empty);
       return res.json(empty);
     }
 
@@ -471,7 +482,8 @@ app.get('/api/player-tournament-stats', async (req, res) => {
 
     const data = {
       available: true,
-      name: resolvedName || name,
+      name: resolvedName || name || null,
+      number: number || null,
       position,
       appearances,
       starts,
@@ -482,7 +494,7 @@ app.get('/api/player-tournament-stats', async (req, res) => {
       redCards,
       cleanSheets,
     };
-    tournamentStatsCache.set(name, data);
+    tournamentStatsCache.set(cacheKey, data);
     res.json(data);
   } catch (err) {
     res.json({ available: false, error: String(err) });
