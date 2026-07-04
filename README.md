@@ -34,12 +34,18 @@ The build step runs `vite build` (output in `dist/`), and `npm start` runs `serv
 Set these on Render (or in `.env` locally):
 
 - `FOOTBALL_DATA_API_KEY` — powers the live-match card on the Matches page (football-data.org). Get a free key at https://www.football-data.org/client/register. Without it, `/api/egypt-match` returns a 500 and the live-match card falls back to the static placeholder.
-- `THESPORTSDB_API_KEY` — powers per-player tournament stats (tap the active player) and the match lineup/statistics modal (tap any match card), via thesportsdb.com. Optional: defaults to the shared free test key `123`, which works but has very low per-endpoint request limits. Get a Patreon key at https://www.thesportsdb.com/member.php for reliable use in production.
+- `GROQ_API_KEY` — powers per-player tournament stats, per-match stats/lineups/substitutions, and coach stats. It works by asking Groq's `groq/compound` system (which has a built-in web-search tool) to research Egypt's real World Cup 2026 matches and return one structured dataset, cached on disk and reused for every visitor. Get a key at https://console.groq.com/keys.
+  - **Important:** Groq (the fast-inference company, console.groq.com) and Grok/xAI (Elon Musk's model) are two different products with very similar names — make sure the key comes from console.groq.com, not groq.com's chat product or x.ai.
+- `GROQ_MODEL` — optional, overrides the default model (`groq/compound`).
 
-### Player name matching (important)
+### Debugging the dataset
 
-Both features above match a player by **name**, not by a stable ID — the server takes the name you send it, keeps its last word, and looks for a lineup entry whose name contains it (see `matches()` in `server.js`). This means:
+A few debug-only routes let you check on the stored dataset without guessing:
 
-- Each entry in `SQUAD` (`src/App.tsx`) can set an optional `apiName` — the player's exact real/registered name as listed on TheSportsDB (search at https://www.thesportsdb.com/search.php?s=). Set this whenever the local nickname/file name doesn't closely resemble the player's real name; otherwise stats for that player will never resolve, no matter how correctly the API keys are configured.
-- Likewise, `EGYPT_TOURNAMENT_MATCHES` in `server.js` must list the real opponent name and date for each fixture exactly as it would appear in a TheSportsDB event search (`Egypt_vs_<Opponent>`); if the fixture isn't indexed there under that name, its lineup/stats will show "no data" for the whole match, independent of player names.
-- If a squad entry represents someone who isn't an actual professional footballer (e.g. a placeholder/joke entry), no `apiName` will ever produce results — that "no data" state is expected, not a bug.
+- `/api/debug/grok-status` — shows whether `GROQ_API_KEY` is configured and whether a dataset has been generated yet.
+- `/api/debug/grok-refresh` — forces a brand-new Groq call right now (can take up to ~90s while it searches the web). Useful right after Egypt plays a new match, or after fixing an API key.
+- `/api/debug/grok-raw` — dumps the full stored dataset.
+
+### Player/match matching (important)
+
+Both the player-stats and match-lineup features match by the player's **shirt number** (via `SQUAD_ROSTER` in `server.js`, kept in sync with `SQUAD` in `src/App.tsx`), not by fuzzy name matching — so results are consistent regardless of how a name is spelled or abbreviated.

@@ -92,30 +92,36 @@ app.get('/api/egypt-match', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// xAI Grok integration — replaces TheSportsDB entirely.
+// Groq Compound integration — replaces TheSportsDB entirely.
 //
 // Instead of stitching together several sparse/free-tier sports APIs, we ask
-// Grok (with its web_search tool switched on) to act as a football
-// performance analyst: search the web for Egypt's real World Cup 2026
-// results, lineups, and stats, and hand back one big strict-JSON dataset.
+// Groq's "compound" system (an agentic model with a built-in, server-side
+// web_search tool) to act as a football performance analyst: search the web
+// for Egypt's real World Cup 2026 results, lineups, and stats, and hand back
+// one big strict-JSON dataset.
 //
 // That dataset is fetched ONCE (first deploy, or whenever the cheap
 // freshness check below detects Egypt has played a new match) and stored on
 // disk. Every visitor after that is served the stored copy — nobody's
-// request ever triggers a live Grok call directly.
+// request ever triggers a live Groq call directly.
 //
-// Requires XAI_API_KEY (from https://console.x.ai) to be set as an
-// environment variable. Optionally override XAI_MODEL (defaults to
-// "grok-4.3").
+// Requires GROQ_API_KEY (from https://console.groq.com) to be set as an
+// environment variable. Optionally override GROQ_MODEL (defaults to
+// "groq/compound").
+//
+// NOTE: this used to call xAI's Grok — same idea (an LLM with web search),
+// different vendor. Groq (the inference company) and Grok/xAI (Elon Musk's
+// model) are unrelated products despite the similar names; the env var is
+// now GROQ_API_KEY, not XAI_API_KEY.
 // ---------------------------------------------------------------------------
-const XAI_API_KEY = process.env.XAI_API_KEY;
-const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.3';
-const XAI_BASE = 'https://api.x.ai/v1';
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_MODEL = process.env.GROQ_MODEL || 'groq/compound';
+const GROQ_BASE = 'https://api.groq.com/openai/v1';
 
 // Egypt's official 26-man World Cup 2026 squad + shirt numbers, confirmed
 // against FIFA's published squad list. Kept in sync with SQUAD in
-// src/App.tsx. Given to Grok as ground truth so it doesn't have to guess
-// (or invent) who's actually in the squad.
+// src/App.tsx. Given to the model as ground truth so it doesn't have to
+// guess (or invent) who's actually in the squad.
 const SQUAD_ROSTER = [
   { number: '1', name: 'Mohamed El Shenawy', position: 'GK' },
   { number: '2', name: 'Yasser Ibrahim', position: 'DEF' },
@@ -146,8 +152,8 @@ const SQUAD_ROSTER = [
 ];
 const COACH_NAME = 'Hossam Hassan';
 
-// Confirmed results, given to Grok as anchors it must not contradict — it
-// only needs to search for the details (lineups, cards, exact minutes)
+// Confirmed results, given to the model as anchors it must not contradict —
+// it only needs to search for the details (lineups, cards, exact minutes)
 // underneath these already-known scorelines. Extend this list as Egypt
 // advances further in the tournament (Round of 16 and beyond).
 const EGYPT_FIXTURES_SEED = [
@@ -157,18 +163,19 @@ const EGYPT_FIXTURES_SEED = [
   { date: '2026-07-03', opponent: 'Australia', venue: 'Dallas Stadium', round: 'Round of 32', scoreEgypt: 1, scoreOpponent: 1, note: 'Egypt won 4-2 on penalties after extra time' },
 ];
 
-// Calls Grok via the Responses API with the web_search tool enabled, and
-// returns its raw text output.
+// Calls Groq's Compound system (OpenAI-compatible chat completions, with its
+// built-in server-side web_search tool restricted on) and returns its raw
+// text output.
 async function callGrok(promptText, opts = {}) {
-  if (!XAI_API_KEY) throw new Error('XAI_API_KEY is not configured on the server.');
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY is not configured on the server.');
 
-  const resp = await fetch(`${XAI_BASE}/responses`, {
+  const resp = await fetch(`${GROQ_BASE}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${XAI_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
     signal: AbortSignal.timeout(90_000), // web search + reasoning can take a while, but not forever
     body: JSON.stringify({
-      model: XAI_MODEL,
-      input: [
+      model: GROQ_MODEL,
+      messages: [
         {
           role: 'system',
           content:
@@ -177,27 +184,22 @@ async function callGrok(promptText, opts = {}) {
         },
         { role: 'user', content: promptText },
       ],
-      tools: [{ type: 'web_search' }],
+      compound_custom: { tools: { enabled_tools: ['web_search'] } },
     }),
   });
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
-    throw new Error(`xAI API error ${resp.status}: ${errText.slice(0, 500)}`);
+    throw new Error(`Groq API error ${resp.status}: ${errText.slice(0, 500)}`);
   }
 
   const payload = await resp.json();
-  const messageItem = (payload.output || []).find((o) => o.type === 'message' && o.role === 'assistant');
-  const raw = (messageItem?.content || [])
-    .filter((c) => c.type === 'output_text')
-    .map((c) => c.text)
-    .join('\n')
-    .trim();
-  if (!raw) throw new Error('Empty response from Grok.');
+  const raw = (payload.choices?.[0]?.message?.content || '').trim();
+  if (!raw) throw new Error('Empty response from Groq.');
   return raw;
 }
 
-// Grok occasionally wraps JSON in ```json fences or adds a stray sentence
+// Groq occasionally wraps JSON in ```json fences or adds a stray sentence
 // before/after it — this strips both.
 function extractJson(raw) {
   let cleaned = raw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
@@ -651,8 +653,8 @@ app.get('/api/coach-stats', async (req, res) => {
 app.get('/api/debug/grok-status', (req, res) => {
   const stored = grokCache.get('dataset');
   res.json({
-    xaiKeyConfigured: !!XAI_API_KEY,
-    model: XAI_MODEL,
+    groqKeyConfigured: !!GROQ_API_KEY,
+    model: GROQ_MODEL,
     stored: stored
       ? {
           generatedAt: stored.generatedAt,

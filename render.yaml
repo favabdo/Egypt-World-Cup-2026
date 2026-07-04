@@ -15,12 +15,12 @@ services:
       - key: FOOTBALL_DATA_API_KEY
         sync: false
       # Powers per-player tournament stats, coach stats, and match lineups
-      # (via xAI's Grok, which searches the web for real data). Get a key at
-      # https://console.x.ai, then set the actual value in the Render
-      # Dashboard -> Environment (do not commit real keys to this file).
-      - key: XAI_API_KEY
+      # (via Groq's Compound system, which searches the web for real data).
+      # Get a key at https://console.groq.com, then set the actual value in
+      # the Render Dashboard -> Environment (do not commit real keys here).
+      - key: GROQ_API_KEY
         sync: false
-      # Optional: overrides the default Grok model ("grok-4.3").
-      - key: XAI_MODEL
+      # Optional: overrides the default Groq model ("groq/compound").
+      - key: GROQ_MODEL
         sync: false
     autoDeploy: true
