@@ -587,9 +587,10 @@ export default function App() {
       willChange: 'transform, filter, opacity, left',
     };
 
-    // Same coordinates on every screen size — mobile now mirrors the
-    // desktop carousel exactly instead of using its own (buggier) set of
-    // positions, so there's only one animation to get right.
+    // left/bottom/height stay identical on every screen size so the slide
+    // path to center is always the same single smooth motion — only the
+    // scale is trimmed down a bit on mobile so the (larger, portrait)
+    // photos don't feel oversized/cropped on a small screen.
     switch (role) {
       case 'center':
         return {
@@ -597,7 +598,7 @@ export default function App() {
           left: '50%',
           bottom: '0',
           height: '88%',
-          transform: 'translateX(-50%) scale(1.62)',
+          transform: `translateX(-50%) scale(${isMobile ? 1.4 : 1.62})`,
           filter: 'blur(0px)',
           opacity: 1,
           zIndex: 20,
@@ -610,7 +611,7 @@ export default function App() {
           left: '22%',
           bottom: '0',
           height: '82%',
-          transform: 'translateX(-50%) scale(1.05)',
+          transform: `translateX(-50%) scale(${isMobile ? 0.9 : 1.05})`,
           filter: 'blur(0px)',
           opacity: 1,
           zIndex: 30,
@@ -621,7 +622,7 @@ export default function App() {
           left: '30%',
           bottom: '12%',
           height: '28%',
-          transform: 'translateX(-50%) scale(1)',
+          transform: `translateX(-50%) scale(${isMobile ? 0.85 : 1})`,
           filter: 'blur(2px)',
           opacity: 0.85,
           zIndex: 10,
@@ -632,7 +633,7 @@ export default function App() {
           left: '70%',
           bottom: '12%',
           height: '28%',
-          transform: 'translateX(-50%) scale(1)',
+          transform: `translateX(-50%) scale(${isMobile ? 0.85 : 1})`,
           filter: 'blur(2px)',
           opacity: 0.85,
           zIndex: 10,
