@@ -217,27 +217,110 @@ const eventIdCache = makeCache('eventIds', 7 * 24 * 60 * 60 * 1000); // resolved
 const matchBundleCache = makeCache('matchBundles', 5 * 60 * 1000); // short TTL by default; set to permanent (null) once a match is finished
 const tournamentStatsCache = makeCache('tournamentStats', 5 * 60 * 1000); // aggregate endpoints, cheap to recompute from the bundle cache
 
+// Resolves and permanently caches Egypt's TheSportsDB team ID once. All
+// schedule lookups below key off this ID rather than searching by name.
+async function getEgyptTeamId() {
+  const cached = eventIdCache.get('__egypt_team_id__');
+  if (cached !== undefined) return cached;
+
+  try {
+    const payload = await tsdb('/searchteams.php', { t: 'Egypt' });
+    const teams = payload.teams || [];
+    const team = teams.find((t) => t.strSport === 'Soccer' && isEgyptTeam({ name: t.strTeam })) || null;
+    const id = team ? team.idTeam : null;
+    // Permanent once resolved; retry hourly if the lookup itself failed.
+    eventIdCache.set('__egypt_team_id__', id, id ? null : 60 * 60 * 1000);
+    return id;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Egypt's actual fixture list straight from TheSportsDB (past 5 + next 5
+// events for their team ID). Far more reliable than guessing event-name
+// strings or exact calendar dates — those broke every time an opponent's
+// official TheSportsDB name differed from ours (e.g. "IR Iran" vs "Iran")
+// or a hardcoded date was off by a day. Short TTL so newly finished/
+// upcoming matches get picked up, but cheap since it's just 2 calls.
+async function getEgyptScheduleRaw() {
+  const cached = matchBundleCache.get('__egypt_schedule__');
+  if (cached !== undefined) return cached;
+
+  const teamId = await getEgyptTeamId();
+  if (!teamId) return [];
+
+  const [lastPayload, nextPayload] = await Promise.all([
+    tsdb('/eventslast.php', { id: teamId }).catch(() => ({ results: [] })),
+    tsdb('/eventsnext.php', { id: teamId }).catch(() => ({ events: [] })),
+  ]);
+  const events = [...(lastPayload.results || []), ...(nextPayload.events || [])];
+  matchBundleCache.set('__egypt_schedule__', events, 5 * 60 * 1000);
+  return events;
+}
+
+// Matches a fixture from our hardcoded list against Egypt's real schedule
+// by opponent name (loosely — handles "IR Iran" vs "Iran", "Iran" vs "IR
+// Iran", etc.) and, if there are multiple matchups against the same
+// opponent, narrows by date (allowing a ±2 day tolerance in case our
+// hardcoded date is slightly off).
+function matchFixtureFromSchedule(schedule, date, opponent) {
+  const opp = String(opponent || '').toLowerCase();
+  const oppLoose = opp.replace(/^ir\s+/, '').trim(); // "ir iran" -> "iran"
+  const targetTime = date ? new Date(date).getTime() : null;
+
+  const candidates = schedule.filter((ev) => {
+    const home = String(ev.strHomeTeam || '').toLowerCase();
+    const away = String(ev.strAwayTeam || '').toLowerCase();
+    const isEgyptMatch = isEgyptTeam({ name: ev.strHomeTeam }) || isEgyptTeam({ name: ev.strAwayTeam });
+    if (!isEgyptMatch) return false;
+    if (!opp) return true;
+    const otherTeam = isEgyptTeam({ name: ev.strHomeTeam }) ? away : home;
+    return otherTeam.includes(oppLoose) || oppLoose.includes(otherTeam) || otherTeam.includes(opp) || opp.includes(otherTeam);
+  });
+
+  if (candidates.length <= 1) return candidates[0] || null;
+  if (!targetTime) return candidates[0];
+
+  // Multiple matchups vs the same opponent (rare) — pick the closest date.
+  return candidates.reduce((best, ev) => {
+    const evTime = new Date(ev.dateEvent).getTime();
+    const bestTime = new Date(best.dateEvent).getTime();
+    return Math.abs(evTime - targetTime) < Math.abs(bestTime - targetTime) ? ev : best;
+  });
+}
+
 // Resolves a TheSportsDB idEvent for an Egypt fixture on a given date,
-// optionally narrowed by opponent name. Tries a direct fixture-name search
-// first (fast, targeted), then falls back to scanning that calendar day.
+// optionally narrowed by opponent name. Primary strategy: match it against
+// Egypt's real schedule (by team ID, immune to naming/date guessing).
+// Falls back to a direct fixture-name search, then to scanning that
+// calendar day, for the rare case the schedule endpoint itself is down.
 async function resolveEventId(date, opponent) {
   const cacheKey = `${date}|${opponent}`;
   const cached = eventIdCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
   let found = null;
-  const tryNames = opponent
-    ? [`Egypt_vs_${slug(opponent)}`, `${slug(opponent)}_vs_Egypt`]
-    : [];
 
-  for (const e of tryNames) {
-    try {
-      const payload = await tsdb('/searchevents.php', { e });
-      const events = payload.event || [];
-      found = events.find((ev) => (ev.dateEvent || '').slice(0, 10) === date) || events[0] || null;
-      if (found) break;
-    } catch (_) {
-      /* try next strategy */
+  try {
+    const schedule = await getEgyptScheduleRaw();
+    found = matchFixtureFromSchedule(schedule, date, opponent);
+  } catch (_) {
+    /* fall through to legacy strategies */
+  }
+
+  if (!found) {
+    const tryNames = opponent
+      ? [`Egypt_vs_${slug(opponent)}`, `${slug(opponent)}_vs_Egypt`]
+      : [];
+    for (const e of tryNames) {
+      try {
+        const payload = await tsdb('/searchevents.php', { e });
+        const events = payload.event || [];
+        found = events.find((ev) => (ev.dateEvent || '').slice(0, 10) === date) || events[0] || null;
+        if (found) break;
+      } catch (_) {
+        /* try next strategy */
+      }
     }
   }
 
@@ -254,7 +337,9 @@ async function resolveEventId(date, opponent) {
   }
 
   const idEvent = found ? found.idEvent : null;
-  eventIdCache.set(cacheKey, idEvent);
+  // Only cache successful resolutions forever; leave failures on a short
+  // 10-minute retry window instead of the 7-day default.
+  eventIdCache.set(cacheKey, idEvent, idEvent ? null : 10 * 60 * 1000);
   return idEvent;
 }
 
@@ -420,6 +505,53 @@ async function getMatchBundle(date, opponent) {
 async function getAllMatchBundles() {
   return Promise.all(EGYPT_TOURNAMENT_MATCHES.map((m) => getMatchBundle(m.date, m.opponent)));
 }
+
+// GET /api/debug/fixtures — diagnostic view of exactly what TheSportsDB
+// returns for Egypt's team lookup, schedule, and each hardcoded fixture's
+// resolution. Bypasses all caches (always hits the network fresh) so it
+// reflects the current live state. Visit this directly in a browser when
+// player/lineup data isn't showing up, to see exactly which step is empty.
+app.get('/api/debug/fixtures', async (req, res) => {
+  try {
+    const teamId = await getEgyptTeamId();
+    let schedule = [];
+    let scheduleError = null;
+    try {
+      schedule = await getEgyptScheduleRaw();
+    } catch (err) {
+      scheduleError = String(err);
+    }
+
+    const fixtures = await Promise.all(
+      EGYPT_TOURNAMENT_MATCHES.map(async (m) => {
+        const matched = matchFixtureFromSchedule(schedule, m.date, m.opponent);
+        const idEvent = await resolveEventId(m.date, m.opponent);
+        return {
+          ...m,
+          matchedFromSchedule: matched
+            ? { idEvent: matched.idEvent, home: matched.strHomeTeam, away: matched.strAwayTeam, date: matched.dateEvent }
+            : null,
+          resolvedIdEvent: idEvent,
+        };
+      })
+    );
+
+    res.json({
+      egyptTeamId: teamId,
+      scheduleError,
+      scheduleCount: schedule.length,
+      scheduleSample: schedule.map((ev) => ({
+        idEvent: ev.idEvent,
+        home: ev.strHomeTeam,
+        away: ev.strAwayTeam,
+        date: ev.dateEvent,
+      })),
+      fixtures,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 // How many Egypt matches have an actual final score right now. Finished
 // bundles are cached forever (no network cost to check this), so calling
