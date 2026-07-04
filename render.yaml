@@ -14,11 +14,13 @@ services:
       # real keys to this file).
       - key: FOOTBALL_DATA_API_KEY
         sync: false
-      # Optional: powers per-player tournament stats and match lineups
-      # (thesportsdb.com). Defaults to the shared test key "123" if unset,
-      # which works but has low per-endpoint rate limits. Get a Patreon key
-      # at https://www.thesportsdb.com/member.php for higher limits, then
-      # set it in the Render Dashboard -> Environment.
-      - key: THESPORTSDB_API_KEY
+      # Powers per-player tournament stats, coach stats, and match lineups
+      # (via xAI's Grok, which searches the web for real data). Get a key at
+      # https://console.x.ai, then set the actual value in the Render
+      # Dashboard -> Environment (do not commit real keys to this file).
+      - key: XAI_API_KEY
+        sync: false
+      # Optional: overrides the default Grok model ("grok-4.3").
+      - key: XAI_MODEL
         sync: false
     autoDeploy: true
