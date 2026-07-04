@@ -306,7 +306,16 @@ export default function App() {
 
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
-  const [isMobile, setIsMobile] = useState<boolean>(false);
+  // Read the real viewport width on the very first render instead of
+  // defaulting to `false` (desktop). Without this, every phone briefly
+  // renders the desktop carousel layout (wider left/right offsets, bigger
+  // scale) and then, a beat later, the resize-effect below flips it to the
+  // mobile layout — and because left/bottom/height/transform are all
+  // transitioned, that correction plays out as a visible slide from the
+  // side into place instead of the player landing directly on its spot.
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 640
+  );
   const [selectedSection, setSelectedSection] = useState<string>('team');
   const [liveMatch, setLiveMatch] = useState<EgyptMatchApiResponse>(null);
   const [liveMatchError, setLiveMatchError] = useState<boolean>(false);
