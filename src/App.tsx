@@ -577,80 +577,67 @@ export default function App() {
     }
   };
 
-  // 3D positioning styles per role in the carousel
-  const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back' | 'statsFocus') => {
-    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)';
-    const baseStyle = {
-      position: 'absolute' as const,
-      aspectRatio: '0.6 / 1',
-      transition,
-      willChange: 'transform, filter, opacity, left',
-    };
+  // Per-role target: how far from center (x, in vw) and from the floor
+  // (bottom, in vh) the slot sits, plus how big the photo is there.
+  // `scale` / `mobileScale` are the *final* combined size (this used to be
+  // height% × transform-scale on the same element — now it's just one
+  // number per screen size).
+  const ROLE_CONFIG: Record<
+    'center' | 'left' | 'right' | 'back' | 'statsFocus',
+    { x: number; bottom: number; scale: number; mobileScale: number; filter: string; opacity: number; zIndex: number }
+  > = {
+    center: { x: 0, bottom: 0, scale: 1.4256, mobileScale: 0.97, filter: 'blur(0px)', opacity: 1, zIndex: 20 },
+    // Slides here when its stats panel is open, shifting left to make room
+    // for the panel beside it.
+    statsFocus: { x: -28, bottom: 0, scale: 0.861, mobileScale: 0.65, filter: 'blur(0px)', opacity: 1, zIndex: 30 },
+    left: { x: -20, bottom: 12, scale: 0.28, mobileScale: 0.21, filter: 'blur(2px)', opacity: 0.85, zIndex: 10 },
+    right: { x: 20, bottom: 12, scale: 0.28, mobileScale: 0.21, filter: 'blur(2px)', opacity: 0.85, zIndex: 10 },
+    back: { x: 0, bottom: 12, scale: 0.16, mobileScale: 0.16, filter: 'blur(6px)', opacity: 0, zIndex: 5 },
+  };
 
-    // left/bottom/height stay identical on every screen size so the slide
-    // path to center is always the same single smooth motion — only the
-    // scale is trimmed down a bit on mobile so the (larger, portrait)
-    // photos don't feel oversized/cropped on a small screen.
-    switch (role) {
-      case 'center':
-        return {
-          ...baseStyle,
-          left: '50%',
-          bottom: '0',
-          height: '88%',
-          transform: `translateX(-50%) scale(${isMobile ? 1.4 : 1.62})`,
-          filter: 'blur(0px)',
-          opacity: 1,
-          zIndex: 20,
-        };
-      // The player photo slides here when its stats panel is open, shifting
-      // left to make room for the panel beside it.
-      case 'statsFocus':
-        return {
-          ...baseStyle,
-          left: '22%',
-          bottom: '0',
-          height: '82%',
-          transform: `translateX(-50%) scale(${isMobile ? 0.9 : 1.05})`,
-          filter: 'blur(0px)',
-          opacity: 1,
-          zIndex: 30,
-        };
-      case 'left':
-        return {
-          ...baseStyle,
-          left: '30%',
-          bottom: '12%',
-          height: '28%',
-          transform: `translateX(-50%) scale(${isMobile ? 0.85 : 1})`,
-          filter: 'blur(2px)',
-          opacity: 0.85,
-          zIndex: 10,
-        };
-      case 'right':
-        return {
-          ...baseStyle,
-          left: '70%',
-          bottom: '12%',
-          height: '28%',
-          transform: `translateX(-50%) scale(${isMobile ? 0.85 : 1})`,
-          filter: 'blur(2px)',
-          opacity: 0.85,
-          zIndex: 10,
-        };
-      case 'back':
-        return {
-          ...baseStyle,
-          left: '50%',
-          bottom: '12%',
-          height: '20%',
-          transform: 'translateX(-50%) scale(0.8)',
-          filter: 'blur(6px)',
-          opacity: 0,
-          pointerEvents: 'none' as const,
-          zIndex: 5,
-        };
-    }
+  // 3D positioning styles per role in the carousel.
+  //
+  // Split into two elements on purpose:
+  //  - `outer` only ever changes `transform: translate3d(...)` — it moves
+  //    the slot around the stage.
+  //  - `inner` only ever changes `transform: scale(...)` — it resizes the
+  //    photo in place.
+  // Both are pure compositor transforms (no `left`/`bottom`/`height`
+  // animating), so the browser never has to re-run layout mid-transition.
+  // That's what was causing the slide to visibly stall partway on mobile:
+  // animating layout properties (left/bottom/height) forces a reflow on
+  // every frame, and phones drop frames doing that, which reads as the
+  // photo "getting stuck" before it hops to its final spot. Transform-only
+  // animation is GPU-composited and stays smooth the whole way to center.
+  const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back' | 'statsFocus') => {
+    const cfg = ROLE_CONFIG[role];
+    const scale = isMobile ? cfg.mobileScale : cfg.scale;
+    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1)';
+
+    return {
+      outer: {
+        position: 'absolute' as const,
+        left: '50%',
+        bottom: '0',
+        height: '100%',
+        aspectRatio: '0.6 / 1',
+        transform: `translate3d(calc(-50% + ${cfg.x}vw), ${-cfg.bottom}vh, 0)`,
+        transition,
+        willChange: 'transform, filter, opacity',
+        filter: cfg.filter,
+        opacity: cfg.opacity,
+        zIndex: cfg.zIndex,
+        pointerEvents: role === 'back' ? ('none' as const) : undefined,
+      },
+      inner: {
+        width: '100%',
+        height: '100%',
+        transform: `scale(${scale})`,
+        transformOrigin: 'center bottom',
+        transition: 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1)',
+        willChange: 'transform',
+      },
+    };
   };
 
   // Get active item properties (fallback keeps things safe on the empty Matches page)
@@ -841,7 +828,7 @@ export default function App() {
               }
             }
 
-            const style = getRoleStyle(role);
+            const { outer, inner } = getRoleStyle(role);
 
             // Only mount the <img> for slides within 2 steps of the active
             // one (max 5 concurrent photos) instead of the whole squad.
@@ -860,7 +847,7 @@ export default function App() {
               <div 
                 key={item.id} 
                 id={`figurine-item-${i}`}
-                style={style}
+                style={outer}
                 className="group select-none flex items-center justify-center cursor-pointer pointer-events-auto"
                 onClick={() => {
                   if (i === activeIndex) {
@@ -876,6 +863,7 @@ export default function App() {
                   }
                 }}
               >
+                <div style={inner} className="relative">
                 {shouldLoadImage && (
                   <img 
                     src={item.src} 
@@ -886,6 +874,7 @@ export default function App() {
                     fetchPriority={i === activeIndex ? 'high' : 'low'}
                   />
                 )}
+                </div>
               </div>
             );
           })}
