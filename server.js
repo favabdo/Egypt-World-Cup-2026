@@ -457,7 +457,7 @@ function buildBundleFromMatch(m) {
   }));
 
   const idFor = (name) => {
-    const hit = [...startersRaw, ...substitutes].find((p) => p.name === name);
+    const hit = [...startersRaw, ...substitutes].find((p) => namesMatch(p.name, name));
     return hit ? hit.idPlayer : slugify(name);
   };
 
@@ -566,6 +566,30 @@ app.get('/api/player-tournament-stats', async (req, res) => {
 // Matching is done by shirt number first (via SQUAD_ROSTER, which is the
 // same source of truth src/App.tsx's SQUAD uses), falling back to name only
 // when no number is supplied.
+// Groq is told to reuse the exact canonical roster name everywhere, but in
+// practice its free-text "timeline" entries sometimes shorten or respell a
+// name (e.g. "Salah" instead of "Mohamed Salah", or a transliteration
+// variant). Exact string equality then silently drops that goal/assist/card
+// from the player's stats. We compare on the normalized surname instead —
+// the most stable, distinguishing part of a name — so small variations
+// don't cause a real event to go uncounted.
+const normalizeNameStr = (s) => String(s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
+const lastWord = (s) => {
+  const parts = normalizeNameStr(s).split(/\s+/).filter(Boolean);
+  return parts[parts.length - 1] || '';
+};
+function namesMatch(candidate, target) {
+  if (!candidate || !target) return false;
+  const c = normalizeNameStr(candidate);
+  const t = normalizeNameStr(target);
+  if (c === t) return true;
+  const cLast = lastWord(candidate);
+  const tLast = lastWord(target);
+  if (cLast && tLast && cLast === tLast) return true;
+  // one name fully contains the other (handles "Salah" vs "Mohamed Salah")
+  return (c.length > 2 && t.includes(c)) || (t.length > 2 && c.includes(t));
+}
+
 function computePlayerMatchStats(dataset, number, name) {
   const matches = dataset.data.matches || [];
   const rosterPlayer = number ? SQUAD_ROSTER.find((p) => String(p.number) === String(number)) : null;
@@ -574,10 +598,10 @@ function computePlayerMatchStats(dataset, number, name) {
 
   const perMatch = matches.map((m) => {
     const startEntry = (m.startXI || []).find(
-      (p) => p.name === targetName || (number && String(p.number) === String(number))
+      (p) => namesMatch(p.name, targetName) || (number && String(p.number) === String(number))
     );
     const subEntry = (m.substitutes || []).find(
-      (p) => p.name === targetName || (number && String(p.number) === String(number))
+      (p) => namesMatch(p.name, targetName) || (number && String(p.number) === String(number))
     );
     const started = !!startEntry;
     const played = started || !!subEntry;
@@ -589,11 +613,11 @@ function computePlayerMatchStats(dataset, number, name) {
 
     (m.timeline || []).forEach((t) => {
       if (t.type !== 'substitution' || t.team !== 'egypt') return;
-      if (t.playerOn === targetName) {
+      if (namesMatch(t.playerOn, targetName)) {
         subOnMinute = subOnMinute ?? (t.minute ?? null);
         subOffFor = t.playerOff || null;
       }
-      if (t.playerOff === targetName) {
+      if (namesMatch(t.playerOff, targetName)) {
         subOffMinute = t.minute ?? null;
         subOnFor = t.playerOn || null;
       }
@@ -613,10 +637,10 @@ function computePlayerMatchStats(dataset, number, name) {
     (m.timeline || []).forEach((t) => {
       if (t.team !== 'egypt') return;
       if (t.type === 'goal') {
-        if (t.player === targetName) goals += 1;
-        if (t.assistPlayer === targetName) assists += 1;
+        if (namesMatch(t.player, targetName)) goals += 1;
+        if (namesMatch(t.assistPlayer, targetName)) assists += 1;
       }
-      if (t.type === 'card' && t.player === targetName) {
+      if (t.type === 'card' && namesMatch(t.player, targetName)) {
         if (/red/i.test(t.detail || '')) redCards += 1;
         else yellowCards += 1;
       }

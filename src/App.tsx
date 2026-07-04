@@ -218,17 +218,25 @@ const getSingleWordFontSize = (word: string) => {
   return 'clamp(70px, 25vw, 360px)';
 };
 
-// Best-effort match between an API-FOOTBALL player name (e.g. "Mohamed Salah")
-// and our local squad photos (file names are usually surnames, e.g. "salah").
-// Falls back to null so the caller can render an initials avatar instead.
-const localPhotoFor = (apiName: string): { src: string; number: string | null } | null => {
+// Match an AI-generated player (name + shirt number) to our local squad
+// photos. Shirt numbers are ground truth on BOTH sides (SQUAD here and
+// SQUAD_ROSTER in server.js use the same real numbers), so matching by
+// number first is reliable. Name-substring matching is kept only as a
+// fallback for the rare case a number is missing, and it's ordered by
+// longest-file-first so a short accidental substring (e.g. "hassan" inside
+// "Haitham Hassan") can't win over a more specific one earlier in the list.
+const localPhotoFor = (apiName: string, apiNumber?: string | null): { src: string; number: string | null } | null => {
+  if (apiNumber != null && apiNumber !== '') {
+    const byNumber = SQUAD.find((p) => p.number === String(apiNumber));
+    if (byNumber) return { src: `/${byNumber.file}.webp`, number: byNumber.number };
+  }
   if (!apiName) return null;
-  const norm = apiName.toLowerCase();
-  const found = SQUAD.find((p) => {
-    const file = p.file.toLowerCase().replace(/[^a-z]/g, '');
-    const disp = (p.displayName || '').toLowerCase();
-    return (file && norm.replace(/[^a-z\s]/g, '').includes(file)) || (disp && norm.includes(disp));
-  });
+  const norm = apiName.toLowerCase().replace(/[^a-z\s]/g, '');
+  const candidates = SQUAD
+    .map((p) => ({ p, file: p.file.toLowerCase().replace(/[^a-z]/g, ''), disp: (p.displayName || '').toLowerCase() }))
+    .filter(({ file, disp }) => (file && norm.includes(file)) || (disp && norm.includes(disp)))
+    .sort((a, b) => b.file.length - a.file.length); // most specific (longest) match wins
+  const found = candidates[0]?.p;
   return found ? { src: `/${found.file}.webp`, number: found.number } : null;
 };
 
@@ -1214,7 +1222,7 @@ export default function App() {
                     </p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {lineupData.substitutes.map((s: any, idx: number) => {
-                        const photo = localPhotoFor(s.name);
+                        const photo = localPhotoFor(s.name, s.number);
                         // Cross-reference the timeline for who this player replaced
                         // and the exact minute, so "came on" isn't just a bare tag.
                         const subEvent = (lineupData.timeline || []).find(
@@ -1298,7 +1306,7 @@ export default function App() {
 // Renders the starting XI on a schematic pitch using each player's
 // API-FOOTBALL "grid" position (row:col), falling back gracefully when
 // a player has no local photo (initials avatar instead).
-function LineupPitch({ startXI }: { startXI: { name: string; number: string | null; pos: string | null; grid: string | null }[] }) {
+function LineupPitch({ startXI }: { startXI: { name: string; number: string | null; pos: string | null; grid: string | null; idPlayer?: string | null }[] }) {
   const withGrid = (startXI || []).filter((p) => p.grid);
   const rows = withGrid.map((p) => Number(p.grid!.split(':')[0]));
   const maxRow = rows.length ? Math.max(...rows) : 1;
@@ -1325,7 +1333,7 @@ function LineupPitch({ startXI }: { startXI: { name: string; number: string | nu
         const orderInRow = rowPlayers.findIndex((pl) => pl.name === p.name);
         const top = 92 - ((row - 1) / Math.max(1, maxRow - 1)) * 84;
         const left = ((orderInRow + 1) / (rowPlayers.length + 1)) * 100;
-        const photo = localPhotoFor(p.name);
+        const photo = localPhotoFor(p.name, p.number);
 
         return (
           <div
