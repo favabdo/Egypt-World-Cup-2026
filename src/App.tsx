@@ -587,29 +587,30 @@ export default function App() {
       willChange: 'transform, filter, opacity, left',
     };
 
+    // Same coordinates on every screen size — mobile now mirrors the
+    // desktop carousel exactly instead of using its own (buggier) set of
+    // positions, so there's only one animation to get right.
     switch (role) {
       case 'center':
         return {
           ...baseStyle,
           left: '50%',
-          bottom: isMobile ? '22%' : '0',
-          height: isMobile ? '60%' : '88%',
-          transform: `translateX(-50%) scale(${isMobile ? 1.25 : 1.62})`,
+          bottom: '0',
+          height: '88%',
+          transform: 'translateX(-50%) scale(1.62)',
           filter: 'blur(0px)',
           opacity: 1,
           zIndex: 20,
         };
-      // The player photo slides here when its stats panel is open.
-      // Desktop: shifts left to make room for the panel beside it.
-      // Mobile: moves to the top-center instead — photo, name and stats
-      // then read as one stacked column instead of photo-left/panel-right.
+      // The player photo slides here when its stats panel is open, shifting
+      // left to make room for the panel beside it.
       case 'statsFocus':
         return {
           ...baseStyle,
-          left: isMobile ? '50%' : '22%',
-          bottom: isMobile ? '50%' : '0',
-          height: isMobile ? '38%' : '82%',
-          transform: `translateX(-50%) scale(${isMobile ? 1 : 1.05})`,
+          left: '22%',
+          bottom: '0',
+          height: '82%',
+          transform: 'translateX(-50%) scale(1.05)',
           filter: 'blur(0px)',
           opacity: 1,
           zIndex: 30,
@@ -617,9 +618,9 @@ export default function App() {
       case 'left':
         return {
           ...baseStyle,
-          left: isMobile ? '20%' : '30%',
-          bottom: isMobile ? '32%' : '12%',
-          height: isMobile ? '16%' : '28%',
+          left: '30%',
+          bottom: '12%',
+          height: '28%',
           transform: 'translateX(-50%) scale(1)',
           filter: 'blur(2px)',
           opacity: 0.85,
@@ -628,9 +629,9 @@ export default function App() {
       case 'right':
         return {
           ...baseStyle,
-          left: isMobile ? '80%' : '70%',
-          bottom: isMobile ? '32%' : '12%',
-          height: isMobile ? '16%' : '28%',
+          left: '70%',
+          bottom: '12%',
+          height: '28%',
           transform: 'translateX(-50%) scale(1)',
           filter: 'blur(2px)',
           opacity: 0.85,
@@ -640,8 +641,8 @@ export default function App() {
         return {
           ...baseStyle,
           left: '50%',
-          bottom: isMobile ? '32%' : '12%',
-          height: isMobile ? '13%' : '20%',
+          bottom: '12%',
+          height: '20%',
           transform: 'translateX(-50%) scale(0.8)',
           filter: 'blur(6px)',
           opacity: 0,
@@ -1001,9 +1002,7 @@ export default function App() {
         {isTeamPage && (
         <div 
           id="nav-section-left"
-          className={`absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white transition-opacity duration-300 ${
-            statsOpen && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
-          }`}
+          className="absolute bottom-12 left-4 right-4 sm:bottom-16 sm:left-24 z-[60] max-w-sm sm:max-w-md text-white transition-opacity duration-300 opacity-100 pointer-events-auto"
         >
           <p className={`font-sans font-bold uppercase tracking-widest mb-1 sm:mb-2 text-base sm:text-[22px] flex items-baseline gap-3 transition-opacity duration-300 ${statsOpen ? 'opacity-0' : 'opacity-95'}`}>
             <span>{displayName}</span>
@@ -1079,12 +1078,8 @@ export default function App() {
         <div
           className={`absolute z-40 text-white transition-all duration-500 ease-out overflow-y-auto ${
             statsOpen ? 'opacity-100 translate-x-0 pointer-events-auto' : 'opacity-0 translate-x-4 pointer-events-none'
-          } ${isMobile ? 'text-center' : ''}`}
-          style={
-            isMobile
-              ? { left: '8%', right: '8%', top: '52%', bottom: '4%' }
-              : { left: '46%', right: '7%', top: '18%', bottom: '14%' }
-          }
+          }`}
+          style={{ left: '46%', right: '7%', top: '18%', bottom: '14%' }}
         >
           <button
             onClick={() => setStatsOpen(false)}
