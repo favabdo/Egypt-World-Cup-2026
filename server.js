@@ -525,6 +525,115 @@ app.get('/api/player-tournament-stats', async (req, res) => {
   }
 });
 
+// Builds a per-match breakdown (started/subbed, minutes, goals, assists,
+// cards) for one player by re-reading the raw per-match data Grok already
+// gave us (startXI / substitutes / timeline) — no extra Grok call needed.
+// Matching is done by shirt number first (via SQUAD_ROSTER, which is the
+// same source of truth src/App.tsx's SQUAD uses), falling back to name only
+// when no number is supplied.
+function computePlayerMatchStats(dataset, number, name) {
+  const matches = dataset.data.matches || [];
+  const rosterPlayer = number ? SQUAD_ROSTER.find((p) => String(p.number) === String(number)) : null;
+  const targetName = rosterPlayer ? rosterPlayer.name : name;
+  if (!targetName) return null;
+
+  const perMatch = matches.map((m) => {
+    const startEntry = (m.startXI || []).find(
+      (p) => p.name === targetName || (number && String(p.number) === String(number))
+    );
+    const subEntry = (m.substitutes || []).find(
+      (p) => p.name === targetName || (number && String(p.number) === String(number))
+    );
+    const started = !!startEntry;
+    const played = started || !!subEntry;
+
+    let subOffMinute = null;
+    let subOnMinute = subEntry ? subEntry.cameOnMinute ?? null : null;
+    let subOffFor = null; // name of teammate this player replaced (if subbed on)
+    let subOnFor = null; // name of teammate who replaced this player (if subbed off)
+
+    (m.timeline || []).forEach((t) => {
+      if (t.type !== 'substitution' || t.team !== 'egypt') return;
+      if (t.playerOn === targetName) {
+        subOnMinute = subOnMinute ?? (t.minute ?? null);
+        subOffFor = t.playerOff || null;
+      }
+      if (t.playerOff === targetName) {
+        subOffMinute = t.minute ?? null;
+        subOnFor = t.playerOn || null;
+      }
+    });
+
+    let minutes = 0;
+    if (started) {
+      minutes = subOffMinute != null ? subOffMinute : 90;
+    } else if (played) {
+      minutes = subOnMinute != null ? Math.max(0, 90 - subOnMinute) : 0;
+    }
+
+    let goals = 0;
+    let assists = 0;
+    let yellowCards = 0;
+    let redCards = 0;
+    (m.timeline || []).forEach((t) => {
+      if (t.team !== 'egypt') return;
+      if (t.type === 'goal') {
+        if (t.player === targetName) goals += 1;
+        if (t.assistPlayer === targetName) assists += 1;
+      }
+      if (t.type === 'card' && t.player === targetName) {
+        if (/red/i.test(t.detail || '')) redCards += 1;
+        else yellowCards += 1;
+      }
+    });
+
+    return {
+      date: m.date,
+      opponent: m.opponent,
+      venue: m.venue || null,
+      scoreEgypt: m.scoreEgypt ?? null,
+      scoreOpponent: m.scoreOpponent ?? null,
+      played,
+      started,
+      minutes,
+      goals,
+      assists,
+      yellowCards,
+      redCards,
+      subOnMinute: started ? null : subOnMinute,
+      subOffMinute: started ? subOffMinute : null,
+      subOffFor,
+      subOnFor,
+    };
+  });
+
+  return { number: (rosterPlayer && rosterPlayer.number) || number || null, name: targetName, matches: perMatch };
+}
+
+// GET /api/player-match-stats?number=10 — one row per finished Egypt match
+// (started/subbed, minutes, goals, assists, cards) for a single player,
+// looked up by shirt number. Computed on the fly from the stored dataset,
+// no extra Grok call.
+app.get('/api/player-match-stats', async (req, res) => {
+  const number = String(req.query.number || '').trim();
+  const name = String(req.query.name || '').trim();
+  if (!number && !name) return res.status(400).json({ available: false, error: 'Missing number or name' });
+
+  try {
+    const dataset = await getDataset();
+    const result = computePlayerMatchStats(dataset, number, name);
+    if (!result) {
+      return res.json({
+        available: false,
+        error: number ? `No player with squad number ${number}.` : 'Player not found.',
+      });
+    }
+    res.json({ available: true, ...result });
+  } catch (err) {
+    res.json({ available: false, error: String(err) });
+  }
+});
+
 // GET /api/coach-stats — head coach's tournament-wide record, from the
 // stored Grok dataset.
 app.get('/api/coach-stats', async (req, res) => {

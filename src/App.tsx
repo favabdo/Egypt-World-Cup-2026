@@ -276,11 +276,17 @@ const STRINGS = {
   cleanSheetsLabel: { ar: 'الشباك النظيفة', en: 'Clean Sheets' },
   noStatsData: { ar: 'لا توجد بيانات متاحة لهذا اللاعب حاليًا', en: 'No data available for this player yet' },
   loadingStats: { ar: 'جاري تحميل الإحصائيات...', en: 'Loading stats...' },
+  perMatchTitle: { ar: 'الإحصائيات في كل مباراة', en: 'Stats per match' },
+  startedBadge: { ar: 'أساسي', en: 'Started' },
+  subBadge: { ar: 'بديل', en: 'Sub' },
+  didNotPlayBadge: { ar: 'لم يشارك', en: 'Did not play' },
   // Lineup modal
   lineupTitle: { ar: 'التشكيل الأساسي', en: 'Starting XI' },
   substitutesTitle: { ar: 'البدلاء', en: 'Substitutes' },
-  cameOn: { ar: 'شارك', en: 'came on' },
+  cameOn: { ar: 'شارك دقيقة', en: 'On' },
+  forLabel: { ar: 'بدلاً من', en: 'for' },
   matchStats: { ar: 'إحصائيات المباراة', en: 'Match Stats' },
+  keyEvents: { ar: 'أحداث المباراة', en: 'Key Events' },
   noLineupData: { ar: 'التشكيل غير متاح حاليًا لهذه المباراة', en: 'Lineup not available for this match yet' },
   loadingLineup: { ar: 'جاري تحميل التشكيل...', en: 'Loading lineup...' },
 };
@@ -311,6 +317,17 @@ export default function App() {
   }>(null);
   const [statsPlayerName, setStatsPlayerName] = useState('');
 
+  // Per-match breakdown for the same player (one row per Egypt match played
+  // so far), shown alongside the tournament-wide totals above.
+  const [matchStatsLoading, setMatchStatsLoading] = useState(false);
+  const [matchStatsError, setMatchStatsError] = useState(false);
+  const [matchStatsList, setMatchStatsList] = useState<null | {
+    date: string; opponent: string; played: boolean; started: boolean; minutes: number;
+    goals: number; assists: number; yellowCards: number; redCards: number;
+    subOnMinute: number | null; subOffMinute: number | null;
+    scoreEgypt: number | null; scoreOpponent: number | null;
+  }[]>(null);
+
   // Looked up by shirt/squad number rather than name — our local squad
   // names (photo filenames, e.g. "salah") rarely match TheSportsDB's full
   // player names exactly, so matching by number is far more reliable.
@@ -320,6 +337,9 @@ export default function App() {
     setStatsLoading(true);
     setStatsError(false);
     setStatsData(null);
+    setMatchStatsLoading(true);
+    setMatchStatsError(false);
+    setMatchStatsList(null);
     const query = player.number
       ? `number=${encodeURIComponent(player.number)}`
       : `name=${encodeURIComponent(player.name)}`;
@@ -331,6 +351,15 @@ export default function App() {
       })
       .catch(() => setStatsError(true))
       .finally(() => setStatsLoading(false));
+
+    fetch(`/api/player-match-stats?${query}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && d.available) setMatchStatsList(d.matches);
+        else setMatchStatsError(true);
+      })
+      .catch(() => setMatchStatsError(true))
+      .finally(() => setMatchStatsLoading(false));
   }, []);
 
   // Match lineup modal (opens when tapping a match card on the Matches page)
@@ -1031,7 +1060,7 @@ export default function App() {
         {/* Player Stats — appears beside the photo once it slides over, no popup/backdrop */}
         {isTeamPage && (
         <div
-          className={`absolute z-40 text-white transition-all duration-500 ease-out ${
+          className={`absolute z-40 text-white transition-all duration-500 ease-out overflow-y-auto ${
             statsOpen ? 'opacity-100 translate-x-0 pointer-events-auto' : 'opacity-0 translate-x-4 pointer-events-none'
           } ${isMobile ? 'text-center' : ''}`}
           style={
@@ -1077,6 +1106,59 @@ export default function App() {
                   <span className="text-[9.5px] sm:text-[10px] uppercase tracking-wide text-white/50">{row.label}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Per-match breakdown — same stats, but one card per match played so far */}
+          {!statsLoading && statsData && (
+            <div className="mt-5 max-w-md">
+              <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-2">
+                {t('perMatchTitle')}
+              </p>
+
+              {matchStatsLoading && (
+                <div className="text-xs text-white/50">{t('loadingStats')}</div>
+              )}
+
+              {!matchStatsLoading && (matchStatsError || !matchStatsList) && (
+                <div className="text-xs text-white/50">{t('noStatsData')}</div>
+              )}
+
+              {!matchStatsLoading && matchStatsList && (
+                <div className={`flex flex-col gap-2 ${isMobile ? 'items-stretch' : ''}`}>
+                  {matchStatsList.map((m, idx) => (
+                    <div
+                      key={idx}
+                      className={`rounded-xl bg-white/10 border border-white/15 backdrop-blur-md p-2.5 sm:p-3 flex items-center gap-3 ${isMobile ? 'text-left' : ''}`}
+                    >
+                      <div className="flex flex-col min-w-[86px]">
+                        <span className="text-[11px] font-bold uppercase truncate">vs {m.opponent}</span>
+                        <span className="text-[9px] text-white/50 font-mono">
+                          {m.scoreEgypt ?? '–'}-{m.scoreOpponent ?? '–'}
+                        </span>
+                      </div>
+                      {m.played ? (
+                        <>
+                          <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0 ${m.started ? 'bg-emerald-400/20 text-emerald-300' : 'bg-amber-400/20 text-amber-300'}`}>
+                            {m.started ? t('startedBadge') : t('subBadge')}
+                          </span>
+                          <div className="flex items-center gap-2.5 text-[10px] font-mono ms-auto whitespace-nowrap">
+                            <span title={t('minutesPlayed')}>{m.minutes}'</span>
+                            {m.goals > 0 && <span title={t('goalsLabel')}>⚽ {m.goals}</span>}
+                            {m.assists > 0 && <span title={t('assistsLabel')}>🎯 {m.assists}</span>}
+                            {m.yellowCards > 0 && <span>🟨 {m.yellowCards}</span>}
+                            {m.redCards > 0 && <span>🟥 {m.redCards}</span>}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-[9px] uppercase tracking-wide text-white/40 ms-auto">
+                          {t('didNotPlayBadge')}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1133,6 +1215,13 @@ export default function App() {
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {lineupData.substitutes.map((s: any, idx: number) => {
                         const photo = localPhotoFor(s.name);
+                        // Cross-reference the timeline for who this player replaced
+                        // and the exact minute, so "came on" isn't just a bare tag.
+                        const subEvent = (lineupData.timeline || []).find(
+                          (ev: any) => ev.type === 'subst' && ev.isEgypt && ev.assistName === s.name
+                        );
+                        const minute = subEvent?.minute ?? s.cameOnMinute ?? null;
+                        const replacedName = subEvent?.playerName || null;
                         return (
                           <div key={idx} className="flex items-center gap-2 rounded-xl bg-white/5 border border-white/10 p-2">
                             {photo ? (
@@ -1145,7 +1234,10 @@ export default function App() {
                             <div className="flex flex-col min-w-0">
                               <span className="text-xs font-semibold truncate">{s.name}</span>
                               {s.cameOn && (
-                                <span className="text-[9px] text-emerald-300 uppercase tracking-wide">{t('cameOn')}</span>
+                                <span className="text-[9px] text-emerald-300 uppercase tracking-wide truncate">
+                                  {t('cameOn')}{minute != null ? ` ${minute}'` : ''}
+                                  {replacedName ? ` · ${t('forLabel')} ${replacedName}` : ''}
+                                </span>
                               )}
                             </div>
                           </div>
@@ -1155,15 +1247,41 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Match statistics */}
-                {lineupData.statistics?.length > 0 && (
+                {/* Match statistics (general stats for the full match) */}
+                {lineupData.teamStats?.length > 0 && (
                   <div className="mt-6">
                     <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-3">
                       {t('matchStats')}
                     </p>
                     <div className="flex flex-col gap-3">
-                      {lineupData.statistics.map((s: any, idx: number) => (
+                      {lineupData.teamStats.map((s: any, idx: number) => (
                         <StatBar key={idx} label={s.type} egypt={s.egypt} opponent={s.opponent} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Key events — goals, cards, and substitutions in chronological order */}
+                {lineupData.timeline?.length > 0 && (
+                  <div className="mt-6">
+                    <p className="text-[10px] uppercase tracking-widest text-white/50 font-mono mb-3">
+                      {t('keyEvents')}
+                    </p>
+                    <div className="flex flex-col gap-2">
+                      {lineupData.timeline.map((ev: any, idx: number) => (
+                        <div key={idx} className="flex items-center gap-3 text-xs">
+                          <span className="w-8 shrink-0 text-white/50 font-mono text-[10px]">{ev.minute}'</span>
+                          <span className="shrink-0">
+                            {ev.type === 'goal' ? '⚽' : ev.type === 'subst' ? '🔁' : ev.detail?.toLowerCase().includes('red') ? '🟥' : '🟨'}
+                          </span>
+                          <span className={`truncate ${ev.isEgypt ? 'text-white' : 'text-white/55'}`}>
+                            {ev.type === 'subst'
+                              ? `${ev.assistName} ${t('forLabel')} ${ev.playerName}`
+                              : ev.type === 'goal'
+                              ? `${ev.playerName}${ev.assistName ? ` (${ev.assistName})` : ''}`
+                              : `${ev.playerName} · ${ev.detail || ''}`}
+                          </span>
+                        </div>
                       ))}
                     </div>
                   </div>
