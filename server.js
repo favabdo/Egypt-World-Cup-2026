@@ -380,19 +380,36 @@ function makeCache(section, defaultTtlMs) {
 // asking Grok "has Egypt played a new match yet?".
 const grokCache = makeCache('grok', 3 * 60 * 60 * 1000);
 
+// Guards against duplicate concurrent Groq calls: if several visitors (or
+// several player-stat clicks) hit the server before the first dataset
+// generation finishes, they all share this ONE in-flight request instead of
+// each firing their own full 26-player analyst call. That "thundering herd"
+// of parallel calls is what burns through Groq's daily token budget fastest.
+let inFlightGeneration = null;
+
 async function generateFullDataset() {
-  const raw = await callGrok(buildAnalystPrompt());
-  const parsed = extractJson(raw);
-  if (!parsed || !Array.isArray(parsed.players) || !Array.isArray(parsed.matches)) {
-    throw new Error('Grok response did not match the expected schema (missing players/matches arrays).');
+  if (inFlightGeneration) return inFlightGeneration;
+
+  inFlightGeneration = (async () => {
+    const raw = await callGrok(buildAnalystPrompt());
+    const parsed = extractJson(raw);
+    if (!parsed || !Array.isArray(parsed.players) || !Array.isArray(parsed.matches)) {
+      throw new Error('Grok response did not match the expected schema (missing players/matches arrays).');
+    }
+    const record = {
+      generatedAt: new Date().toISOString(),
+      matchesFinished: Number.isFinite(parsed.asOfMatchesFinished) ? parsed.asOfMatchesFinished : EGYPT_FIXTURES_SEED.length,
+      data: parsed,
+    };
+    grokCache.set('dataset', record, null); // permanent until a freshness check invalidates it
+    return record;
+  })();
+
+  try {
+    return await inFlightGeneration;
+  } finally {
+    inFlightGeneration = null;
   }
-  const record = {
-    generatedAt: new Date().toISOString(),
-    matchesFinished: Number.isFinite(parsed.asOfMatchesFinished) ? parsed.asOfMatchesFinished : EGYPT_FIXTURES_SEED.length,
-    data: parsed,
-  };
-  grokCache.set('dataset', record, null); // permanent until a freshness check invalidates it
-  return record;
 }
 
 // At most once per freshness-check TTL, ask Grok (cheaply — no full
