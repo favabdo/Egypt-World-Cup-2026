@@ -163,12 +163,15 @@ const EGYPT_FIXTURES_SEED = [
   { date: '2026-07-03', opponent: 'Australia', venue: 'Dallas Stadium', round: 'Round of 32', scoreEgypt: 1, scoreOpponent: 1, note: 'Egypt won 4-2 on penalties after extra time' },
 ];
 
-// Calls Groq's Compound system (OpenAI-compatible chat completions, with its
-// built-in server-side web_search tool restricted on) and returns its raw
-// text output.
-async function callGrok(promptText, opts = {}) {
-  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY is not configured on the server.');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Groq's free/on-demand tier has a per-minute token budget (TPM) shared
+// across every request. Our analyst prompt is large and groq/compound makes
+// several internal web-search calls on top of it, so brushing up against
+// that limit is expected/normal, not a real failure — the API tells us
+// exactly how many seconds to wait ("Please try again in 1.34s"). We parse
+// that and retry automatically instead of surfacing a one-off 429 to users.
+async function callGroqOnce(promptText, opts) {
   const resp = await fetch(`${GROQ_BASE}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
@@ -190,13 +193,43 @@ async function callGrok(promptText, opts = {}) {
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
-    throw new Error(`Groq API error ${resp.status}: ${errText.slice(0, 500)}`);
+    const err = new Error(`Groq API error ${resp.status}: ${errText.slice(0, 500)}`);
+    err.status = resp.status;
+    err.body = errText;
+    throw err;
   }
 
   const payload = await resp.json();
   const raw = (payload.choices?.[0]?.message?.content || '').trim();
   if (!raw) throw new Error('Empty response from Groq.');
   return raw;
+}
+
+// Calls Groq's Compound system (OpenAI-compatible chat completions, with its
+// built-in server-side web_search tool restricted on) and returns its raw
+// text output. Retries automatically on 429 (token-per-minute rate limit).
+async function callGrok(promptText, opts = {}) {
+  if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY is not configured on the server.');
+
+  const MAX_ATTEMPTS = 5;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await callGroqOnce(promptText, opts);
+    } catch (err) {
+      lastErr = err;
+      if (err.status !== 429 || attempt === MAX_ATTEMPTS) throw err;
+
+      // Pull the server-suggested wait time out of the error body
+      // (e.g. "Please try again in 1.344s"); fall back to a short
+      // exponential backoff if it isn't present.
+      const match = /try again in ([\d.]+)s/i.exec(err.body || '');
+      const suggestedMs = match ? Math.ceil(parseFloat(match[1]) * 1000) : null;
+      const waitMs = (suggestedMs ?? attempt * 1500) + 250; // small buffer
+      await sleep(waitMs);
+    }
+  }
+  throw lastErr;
 }
 
 // Groq occasionally wraps JSON in ```json fences or adds a stray sentence
