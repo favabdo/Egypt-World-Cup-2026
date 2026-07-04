@@ -598,6 +598,101 @@ app.get('/api/match-lineup', async (req, res) => {
 // rather than by name, since our local squad names (photo filenames) rarely
 // match TheSportsDB's full player names exactly. `name` is still accepted
 // as a fallback for players without a resolvable number (e.g. the coach).
+// Core aggregation: given a `matches(appearance)` predicate and the already
+// -fetched match bundles, sums up appearances/minutes/goals/etc. Shared by
+// the single-player endpoint and the bulk debug endpoint below.
+function aggregatePlayerStats(matches, bundles) {
+  let appearances = 0;
+  let starts = 0;
+  let minutes = 0;
+  let goals = 0;
+  let assists = 0;
+  let yellowCards = 0;
+  let redCards = 0;
+  let cleanSheets = 0;
+  const posCounts = {};
+  let resolvedName = null;
+  let anyBundleAvailable = false;
+
+  for (const b of bundles) {
+    if (!b.available) continue;
+    anyBundleAvailable = true;
+
+    const app_ = (b.appearances || []).find(matches);
+    if (!app_) continue;
+
+    resolvedName = app_.name;
+    appearances += 1;
+    if (app_.started) starts += 1;
+    posCounts[classifyPosition(app_.pos)] = (posCounts[classifyPosition(app_.pos)] || 0) + 1;
+
+    if (app_.started) {
+      minutes += app_.offMinute != null ? app_.offMinute : 90;
+    } else {
+      minutes += app_.onMinute != null ? Math.max(0, 90 - app_.onMinute) : 0;
+    }
+
+    if (app_.started && b.score?.opponent === 0) cleanSheets += 1;
+
+    const idStr = String(app_.idPlayer);
+    b.timeline.forEach((t) => {
+      if (!t.isEgypt) return;
+      if (t.type === 'goal' && String(t.playerId) === idStr && !(t.detail || '').toLowerCase().includes('own')) goals += 1;
+      if (t.type === 'goal' && String(t.assistId) === idStr) assists += 1;
+      if (t.type === 'card' && String(t.playerId) === idStr) {
+        const d = (t.detail || '').toLowerCase();
+        if (d.includes('yellow')) yellowCards += 1;
+        if (d.includes('red')) redCards += 1;
+      }
+    });
+  }
+
+  const position = Object.entries(posCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'MID';
+  return { anyBundleAvailable, appearances, starts, minutes, goals, assists, yellowCards, redCards, cleanSheets, position, resolvedName };
+}
+
+// The squad's shirt numbers (kept in sync with SQUAD in src/App.tsx).
+// COACH has no shirt number and isn't looked up here.
+const SQUAD_NUMBERS = ['1', '23', '16', '26', '2', '5', '6', '4', '3', '24', '13', '15', '19', '8', '14', '17', '21', '18', '20', '12', '25', '11', '7', '10', '9', '22'];
+
+// GET /api/debug/all-player-stats — runs /api/player-tournament-stats'
+// exact matching logic for every shirt number in the squad in one shot, so
+// you can see at a glance which players have data and which don't, instead
+// of checking one number at a time. Bypasses the cache (always fresh).
+app.get('/api/debug/all-player-stats', async (req, res) => {
+  try {
+    const bundles = await getAllMatchBundles();
+    const results = SQUAD_NUMBERS.map((number) => {
+      const matches = (p) => p && String(p.number || '') === number;
+      const agg = aggregatePlayerStats(matches, bundles);
+      if (agg.appearances === 0) {
+        return { number, available: false, error: 'Not found in any resolved lineup yet.' };
+      }
+      return {
+        number,
+        available: true,
+        name: agg.resolvedName,
+        position: agg.position,
+        appearances: agg.appearances,
+        starts: agg.starts,
+        minutes: agg.minutes,
+        goals: agg.goals,
+        assists: agg.assists,
+        yellowCards: agg.yellowCards,
+        redCards: agg.redCards,
+        cleanSheets: agg.cleanSheets,
+      };
+    });
+    res.json({
+      bundlesAvailable: bundles.filter((b) => b.available).length,
+      bundlesTotal: bundles.length,
+      results,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.get('/api/player-tournament-stats', async (req, res) => {
   const number = String(req.query.number || '').trim();
   const name = String(req.query.name || '').trim();
@@ -623,79 +718,32 @@ app.get('/api/player-tournament-stats', async (req, res) => {
       return p.name && (p.name.toLowerCase().includes(searchTerm) || searchTerm.includes(p.name.toLowerCase().split(/\s+/).slice(-1)[0]));
     };
 
-    let appearances = 0;
-    let starts = 0;
-    let minutes = 0;
-    let goals = 0;
-    let assists = 0;
-    let yellowCards = 0;
-    let redCards = 0;
-    let cleanSheets = 0;
-    const posCounts = {};
-    let resolvedName = null;
-    let anyBundleAvailable = false;
+    const agg = aggregatePlayerStats(matches, bundles);
 
-    for (const b of bundles) {
-      if (!b.available) continue;
-      anyBundleAvailable = true;
-
-      const app_ = (b.appearances || []).find(matches);
-      if (!app_) continue;
-
-      resolvedName = app_.name;
-      appearances += 1;
-      if (app_.started) starts += 1;
-      posCounts[classifyPosition(app_.pos)] = (posCounts[classifyPosition(app_.pos)] || 0) + 1;
-
-      // Approximate minutes: started + not subbed off => ~90; started + subbed
-      // off at X => X; came on at X => ~90 - X. Stoppage time is ignored.
-      if (app_.started) {
-        minutes += app_.offMinute != null ? app_.offMinute : 90;
-      } else {
-        minutes += app_.onMinute != null ? Math.max(0, 90 - app_.onMinute) : 0;
-      }
-
-      if (app_.started && b.score?.opponent === 0) cleanSheets += 1;
-
-      const idStr = String(app_.idPlayer);
-      b.timeline.forEach((t) => {
-        if (!t.isEgypt) return;
-        if (t.type === 'goal' && String(t.playerId) === idStr && !(t.detail || '').toLowerCase().includes('own')) goals += 1;
-        if (t.type === 'goal' && String(t.assistId) === idStr) assists += 1;
-        if (t.type === 'card' && String(t.playerId) === idStr) {
-          const d = (t.detail || '').toLowerCase();
-          if (d.includes('yellow')) yellowCards += 1;
-          if (d.includes('red')) redCards += 1;
-        }
-      });
-    }
-
-    if (!anyBundleAvailable) {
+    if (!agg.anyBundleAvailable) {
       const empty = { available: false, error: 'Could not reach TheSportsDB for any tournament match.' };
       tournamentStatsCache.set(cacheKey, { signature, payload: empty }, null);
       return res.json(empty);
     }
-    if (appearances === 0) {
+    if (agg.appearances === 0) {
       const empty = { available: false, error: number ? `No player with squad number ${number} found in any resolved lineup yet.` : 'Player not found in any resolved lineup yet.' };
       tournamentStatsCache.set(cacheKey, { signature, payload: empty }, null);
       return res.json(empty);
     }
 
-    const position = Object.entries(posCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'MID';
-
     const data = {
       available: true,
-      name: resolvedName || name || null,
+      name: agg.resolvedName || name || null,
       number: number || null,
-      position,
-      appearances,
-      starts,
-      minutes,
-      goals,
-      assists,
-      yellowCards,
-      redCards,
-      cleanSheets,
+      position: agg.position,
+      appearances: agg.appearances,
+      starts: agg.starts,
+      minutes: agg.minutes,
+      goals: agg.goals,
+      assists: agg.assists,
+      yellowCards: agg.yellowCards,
+      redCards: agg.redCards,
+      cleanSheets: agg.cleanSheets,
     };
     tournamentStatsCache.set(cacheKey, { signature, payload: data }, null);
     res.json(data);
