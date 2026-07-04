@@ -577,68 +577,135 @@ export default function App() {
     }
   };
 
-  // Per-role target: how far from center (x, in vw) and from the floor
-  // (bottom, in vh) the slot sits, plus how big the photo is there.
-  // `scale` / `mobileScale` are the *final* combined size (this used to be
-  // height% × transform-scale on the same element — now it's just one
-  // number per screen size).
-  const ROLE_CONFIG: Record<
+  // Mobile-only config for the transform-only carousel (translate + scale).
+  // These are the values that got mobile to feel right — untouched.
+  const MOBILE_ROLE_CONFIG: Record<
     'center' | 'left' | 'right' | 'back' | 'statsFocus',
-    { x: number; bottom: number; scale: number; mobileScale: number; filter: string; opacity: number; zIndex: number }
+    { x: number; bottom: number; scale: number; filter: string; opacity: number; zIndex: number }
   > = {
-    center: { x: 0, bottom: 0, scale: 1.4256, mobileScale: 0.97, filter: 'blur(0px)', opacity: 1, zIndex: 20 },
-    // Slides here when its stats panel is open, shifting left to make room
-    // for the panel beside it.
-    statsFocus: { x: -28, bottom: 0, scale: 0.861, mobileScale: 0.65, filter: 'blur(0px)', opacity: 1, zIndex: 30 },
-    left: { x: -20, bottom: 12, scale: 0.28, mobileScale: 0.21, filter: 'blur(2px)', opacity: 0.85, zIndex: 10 },
-    right: { x: 20, bottom: 12, scale: 0.28, mobileScale: 0.21, filter: 'blur(2px)', opacity: 0.85, zIndex: 10 },
-    back: { x: 0, bottom: 12, scale: 0.16, mobileScale: 0.16, filter: 'blur(6px)', opacity: 0, zIndex: 5 },
+    center: { x: 0, bottom: 0, scale: 0.97, filter: 'blur(0px)', opacity: 1, zIndex: 20 },
+    statsFocus: { x: -28, bottom: 0, scale: 0.65, filter: 'blur(0px)', opacity: 1, zIndex: 30 },
+    left: { x: -20, bottom: 12, scale: 0.21, filter: 'blur(2px)', opacity: 0.85, zIndex: 10 },
+    right: { x: 20, bottom: 12, scale: 0.21, filter: 'blur(2px)', opacity: 0.85, zIndex: 10 },
+    back: { x: 0, bottom: 12, scale: 0.16, filter: 'blur(6px)', opacity: 0, zIndex: 5 },
   };
 
   // 3D positioning styles per role in the carousel.
   //
-  // Split into two elements on purpose:
-  //  - `outer` only ever changes `transform: translate3d(...)` — it moves
-  //    the slot around the stage.
-  //  - `inner` only ever changes `transform: scale(...)` — it resizes the
-  //    photo in place.
-  // Both are pure compositor transforms (no `left`/`bottom`/`height`
-  // animating), so the browser never has to re-run layout mid-transition.
-  // That's what was causing the slide to visibly stall partway on mobile:
-  // animating layout properties (left/bottom/height) forces a reflow on
-  // every frame, and phones drop frames doing that, which reads as the
-  // photo "getting stuck" before it hops to its final spot. Transform-only
-  // animation is GPU-composited and stays smooth the whole way to center.
+  // Mobile: transform-only (translate3d on an outer wrapper + scale on an
+  // inner one). Pure compositor work, no layout property animates, so it
+  // never stalls mid-slide — this is the version that's already right.
+  //
+  // Desktop: reverted to the original approach (left/bottom/height +
+  // transform: scale on a single element, default transform-origin). This
+  // is back to exactly how it behaved before today's changes.
   const getRoleStyle = (role: 'center' | 'left' | 'right' | 'back' | 'statsFocus') => {
-    const cfg = ROLE_CONFIG[role];
-    const scale = isMobile ? cfg.mobileScale : cfg.scale;
-    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1)';
+    if (isMobile) {
+      const cfg = MOBILE_ROLE_CONFIG[role];
+      const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1)';
+      return {
+        outer: {
+          position: 'absolute' as const,
+          left: '50%',
+          bottom: '0',
+          height: '100%',
+          aspectRatio: '0.6 / 1',
+          transform: `translate3d(calc(-50% + ${cfg.x}vw), ${cfg.bottom ? -cfg.bottom : 0}vh, 0)`,
+          transition,
+          willChange: 'transform, filter, opacity',
+          filter: cfg.filter,
+          opacity: cfg.opacity,
+          zIndex: cfg.zIndex,
+          pointerEvents: role === 'back' ? ('none' as const) : undefined,
+        },
+        inner: {
+          width: '100%',
+          height: '100%',
+          transform: `scale(${cfg.scale})`,
+          transformOrigin: 'center bottom',
+          transition: 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1)',
+          willChange: 'transform',
+        },
+      };
+    }
 
-    return {
-      outer: {
-        position: 'absolute' as const,
-        left: '50%',
-        bottom: '0',
-        height: '100%',
-        aspectRatio: '0.6 / 1',
-        transform: `translate3d(calc(-50% + ${cfg.x}vw), ${-cfg.bottom}vh, 0)`,
-        transition,
-        willChange: 'transform, filter, opacity',
-        filter: cfg.filter,
-        opacity: cfg.opacity,
-        zIndex: cfg.zIndex,
-        pointerEvents: role === 'back' ? ('none' as const) : undefined,
-      },
-      inner: {
-        width: '100%',
-        height: '100%',
-        transform: `scale(${scale})`,
-        transformOrigin: 'center bottom',
-        transition: 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1)',
-        willChange: 'transform',
-      },
+    // --- Desktop: original implementation, unchanged ---
+    const transition = 'transform 650ms cubic-bezier(0.4, 0, 0.2, 1), filter 650ms cubic-bezier(0.4, 0, 0.2, 1), opacity 650ms cubic-bezier(0.4, 0, 0.2, 1), left 650ms cubic-bezier(0.4, 0, 0.2, 1), bottom 650ms cubic-bezier(0.4, 0, 0.2, 1), height 650ms cubic-bezier(0.4, 0, 0.2, 1)';
+    const baseStyle = {
+      position: 'absolute' as const,
+      aspectRatio: '0.6 / 1',
+      transition,
+      willChange: 'transform, filter, opacity, left',
     };
+
+    let legacy: Record<string, any>;
+    switch (role) {
+      case 'center':
+        legacy = {
+          ...baseStyle,
+          left: '50%',
+          bottom: '0',
+          height: '88%',
+          transform: 'translateX(-50%) scale(1.62)',
+          filter: 'blur(0px)',
+          opacity: 1,
+          zIndex: 20,
+        };
+        break;
+      case 'statsFocus':
+        legacy = {
+          ...baseStyle,
+          left: '22%',
+          bottom: '0',
+          height: '82%',
+          transform: 'translateX(-50%) scale(1.05)',
+          filter: 'blur(0px)',
+          opacity: 1,
+          zIndex: 30,
+        };
+        break;
+      case 'left':
+        legacy = {
+          ...baseStyle,
+          left: '30%',
+          bottom: '12%',
+          height: '28%',
+          transform: 'translateX(-50%) scale(1)',
+          filter: 'blur(2px)',
+          opacity: 0.85,
+          zIndex: 10,
+        };
+        break;
+      case 'right':
+        legacy = {
+          ...baseStyle,
+          left: '70%',
+          bottom: '12%',
+          height: '28%',
+          transform: 'translateX(-50%) scale(1)',
+          filter: 'blur(2px)',
+          opacity: 0.85,
+          zIndex: 10,
+        };
+        break;
+      case 'back':
+        legacy = {
+          ...baseStyle,
+          left: '50%',
+          bottom: '12%',
+          height: '20%',
+          transform: 'translateX(-50%) scale(0.8)',
+          filter: 'blur(6px)',
+          opacity: 0,
+          pointerEvents: 'none' as const,
+          zIndex: 5,
+        };
+        break;
+    }
+
+    return { outer: legacy, inner: { width: '100%', height: '100%' } };
   };
+
 
   // Get active item properties (fallback keeps things safe on the empty Matches page)
   const activeItem = sectionPlayers[activeIndex] || sectionPlayers[0] || players[0];
