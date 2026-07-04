@@ -207,24 +207,33 @@ async function callGroqOnce(promptText, opts) {
 
 // Calls Groq's Compound system (OpenAI-compatible chat completions, with its
 // built-in server-side web_search tool restricted on) and returns its raw
-// text output. Retries automatically on 429 (token-per-minute rate limit).
+// text output. Retries automatically on 429 (rate limit) — but only when the
+// suggested wait is short and there's real budget left in maxAttempts. Big,
+// expensive prompts (the full analyst call) should pass a LOW maxAttempts:
+// blindly retrying a huge prompt 5x when the daily token quota itself is
+// exhausted just burns more of what's left for no benefit.
 async function callGrok(promptText, opts = {}) {
   if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY is not configured on the server.');
 
-  const MAX_ATTEMPTS = 5;
+  const maxAttempts = opts.maxAttempts ?? 5;
   let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await callGroqOnce(promptText, opts);
     } catch (err) {
       lastErr = err;
-      if (err.status !== 429 || attempt === MAX_ATTEMPTS) throw err;
+      if (err.status !== 429 || attempt === maxAttempts) throw err;
 
       // Pull the server-suggested wait time out of the error body
       // (e.g. "Please try again in 1.344s"); fall back to a short
       // exponential backoff if it isn't present.
       const match = /try again in ([\d.]+)s/i.exec(err.body || '');
       const suggestedMs = match ? Math.ceil(parseFloat(match[1]) * 1000) : null;
+      // If Groq wants us to wait more than 10s (a daily-quota exhaustion,
+      // not a brief per-minute limit), retrying inside this same HTTP
+      // request is pointless — it'll just time out anyway. Fail fast so
+      // the caller can cache the failure and stop hammering the API.
+      if (suggestedMs != null && suggestedMs > 10_000) throw err;
       const waitMs = (suggestedMs ?? attempt * 1500) + 250; // small buffer
       await sleep(waitMs);
     }
@@ -242,59 +251,89 @@ function extractJson(raw) {
   return JSON.parse(cleaned);
 }
 
-function buildAnalystPrompt() {
-  return `You are a professional football performance analyst building a stats dashboard for the Egypt national football team at the 2026 FIFA World Cup.
+// ---------------------------------------------------------------------------
+// TARGETED fetching. Instead of one giant "analyze the whole squad + every
+// match" prompt, we ask Groq only for whatever the visitor actually opened:
+// - clicking a player  -> one small prompt about THAT player only
+// - opening a match     -> one small prompt about THAT match only
+// - coach stats         -> one small prompt for the coach's record
+// Each result is cached forever (per player / per match / coach), so a given
+// player or match only ever costs ONE real Groq call, no matter how many
+// times it's viewed afterwards. This is far cheaper and far less likely to
+// hit rate limits than the old "everything at once" approach.
+// ---------------------------------------------------------------------------
 
-CONFIRMED squad (number — name — position). Use these exact numbers and names, do not invent, drop, or renumber players:
-${SQUAD_ROSTER.map((p) => `${p.number} — ${p.name} — ${p.position}`).join('\n')}
-Head coach: ${COACH_NAME}
+function buildPlayerPrompt(rosterPlayer) {
+  return `You are a football performance analyst. I need real, verified stats for ONE Egypt national team player at the 2026 FIFA World Cup — nothing else.
 
-CONFIRMED match results so far — these scorelines are already verified, do not contradict them, only search for the details underneath them:
+Player: #${rosterPlayer.number} ${rosterPlayer.name} (${rosterPlayer.position})
+
+CONFIRMED Egypt results so far (already verified — do not contradict them, only find this player's involvement in each):
 ${EGYPT_FIXTURES_SEED.map((m) => `${m.date} — Egypt vs ${m.opponent} at ${m.venue} (${m.round}): Egypt ${m.scoreEgypt}-${m.scoreOpponent} ${m.opponent}${m.note ? ' — ' + m.note : ''}`).join('\n')}
 
-Search the web (official FIFA match reports, ESPN, other reliable football sources) to find, for EACH match above:
-- Egypt's starting XI (11 players from the squad list above, with each one's position that match)
-- Substitutes who came on, and the minute they came on
-- The starting formation (e.g. "4-2-3-1")
-- The full timeline of goals (scorer + assist if any + minute), cards (player + yellow/red + minute), and substitutions (player off + player on + minute) for BOTH teams
-- Team stats if available: possession %, shots, shots on target, corners, fouls (Egypt vs opponent)
+Search the web (official FIFA match reports, ESPN, other reliable football sources) to find, for THIS PLAYER ONLY, in EACH match above:
+- Did he play? Did he start or come on as a substitute? What minute did he come on/off?
+- Goals, assists, yellow cards, red cards in that match.
 
-Then aggregate, across all of Egypt's finished matches so far:
-- For every squad player listed above: appearances, starts, total minutes played, goals, assists, yellow cards, red cards, and clean sheets (matches they started that Egypt won 0 against)
-- For the head coach: matches played, wins, draws, losses, goals for, goals against, clean sheets
+Then give tournament-wide totals for this player: appearances, starts, total minutes, goals, assists, yellow cards, red cards, and clean sheets (matches he started that Egypt won without conceding).
 
 Rules:
-- Use only real, verifiable information found via search. If a specific detail (an exact assist, an exact minute) can't be verified, give your best-sourced estimate — never invent implausible stats.
-- Players who haven't appeared in a match yet must have every stat at 0.
-- Include one entry in "matches" for every confirmed fixture listed above, in the same order, plus any newer Egypt match that has since finished which isn't listed above.
-- Respond with STRICT JSON ONLY — no markdown, no code fences, no commentary — exactly matching this schema:
+- Use only real, verifiable information. If the player did not play in a match, mark played=false and all numbers 0 for that match.
+- Include exactly one entry in "matches" per confirmed fixture above, same order.
+- Respond with STRICT JSON ONLY — no markdown, no commentary — exactly matching this schema:
 
 {
-  "asOfMatchesFinished": <integer, total Egypt matches finished so far>,
-  "generatedNote": "<one short sentence on data recency>",
-  "coach": { "name": "${COACH_NAME}", "matchesPlayed": <int>, "wins": <int>, "draws": <int>, "losses": <int>, "goalsFor": <int>, "goalsAgainst": <int>, "cleanSheets": <int> },
-  "players": [
-    { "number": "10", "name": "Mohamed Salah", "position": "FWD", "appearances": <int>, "starts": <int>, "minutes": <int>, "goals": <int>, "assists": <int>, "yellowCards": <int>, "redCards": <int>, "cleanSheets": <int> }
-  ],
+  "tournament": { "appearances": <int>, "starts": <int>, "minutes": <int>, "goals": <int>, "assists": <int>, "yellowCards": <int>, "redCards": <int>, "cleanSheets": <int> },
   "matches": [
-    {
-      "date": "2026-06-15", "opponent": "Belgium", "venue": "Lumen Field, Seattle", "egyptIsHome": false,
-      "status": "Match Finished", "scoreEgypt": 1, "scoreOpponent": 1, "formation": "4-2-3-1",
-      "startXI": [ { "number": "23", "name": "Mostafa Shobeir", "position": "GK" } ],
-      "substitutes": [ { "number": "9", "name": "Hamza Abdelkarim", "position": "FWD", "cameOn": true, "cameOnMinute": 70 } ],
-      "timeline": [
-        { "minute": 34, "type": "goal", "team": "egypt", "player": "Mohamed Salah", "assistPlayer": "Omar Marmoush" },
-        { "minute": 58, "type": "card", "team": "opponent", "player": "Some Player", "detail": "Yellow Card" },
-        { "minute": 70, "type": "substitution", "team": "egypt", "playerOff": "Mahmoud Hassan Trezeguet", "playerOn": "Hamza Abdelkarim" }
-      ],
-      "teamStats": [ { "type": "Possession", "egypt": 42, "opponent": 58 }, { "type": "Shots", "egypt": 8, "opponent": 14 } ]
-    }
+    { "date": "2026-06-15", "opponent": "Belgium", "venue": "Lumen Field, Seattle", "scoreEgypt": 1, "scoreOpponent": 1, "played": true, "started": true, "minutes": 90, "goals": 0, "assists": 0, "yellowCards": 0, "redCards": 0, "subOnMinute": null, "subOffMinute": null, "subOffFor": null, "subOnFor": null }
   ]
 }`;
 }
 
-function buildFreshnessCheckPrompt() {
-  return 'Search the web. As of today, how many official FIFA World Cup 2026 matches has the Egypt national football team played and fully completed (including one that finished earlier today, if any)? Reply with ONLY a single integer and nothing else.';
+function buildMatchPrompt(fixture) {
+  return `You are a football performance analyst. I need the real, verified match report for ONE specific Egypt national team match at the 2026 FIFA World Cup — nothing else.
+
+CONFIRMED result (already verified — do not contradict it, only find the details underneath it):
+${fixture.date} — Egypt vs ${fixture.opponent} at ${fixture.venue} (${fixture.round}): Egypt ${fixture.scoreEgypt}-${fixture.scoreOpponent} ${fixture.opponent}${fixture.note ? ' — ' + fixture.note : ''}
+
+CONFIRMED Egypt squad (number — name — position). Use these exact numbers and names for any Egypt player you mention, do not invent or renumber:
+${SQUAD_ROSTER.map((p) => `${p.number} — ${p.name} — ${p.position}`).join('\n')}
+
+Search the web (official FIFA match report, ESPN, other reliable football sources) to find:
+- Egypt's starting XI (11 players from the squad list above, with each one's position that match)
+- Egypt's substitutes who came on, and the minute they came on
+- The starting formation (e.g. "4-2-3-1")
+- Whether Egypt played at home for this fixture (true/false — for a World Cup match this is normally false unless stated otherwise)
+- The full timeline of goals (scorer + assist if any + minute), cards (player + yellow/red + minute), and substitutions (player off + player on + minute) for BOTH teams
+- Team stats if available: possession %, shots, shots on target, corners, fouls (Egypt vs opponent)
+
+Rules:
+- Use only real, verifiable information found via search. If a specific detail can't be verified, give your best-sourced estimate — never invent implausible stats.
+- Respond with STRICT JSON ONLY — no markdown, no code fences, no commentary — exactly matching this schema:
+
+{
+  "egyptIsHome": false, "status": "Match Finished", "formation": "4-2-3-1",
+  "startXI": [ { "number": "23", "name": "Mostafa Shobeir", "position": "GK" } ],
+  "substitutes": [ { "number": "9", "name": "Hamza Abdelkarim", "position": "FWD", "cameOn": true, "cameOnMinute": 70 } ],
+  "timeline": [
+    { "minute": 34, "type": "goal", "team": "egypt", "player": "Mohamed Salah", "assistPlayer": "Omar Marmoush" },
+    { "minute": 58, "type": "card", "team": "opponent", "player": "Some Player", "detail": "Yellow Card" },
+    { "minute": 70, "type": "substitution", "team": "egypt", "playerOff": "Mahmoud Hassan Trezeguet", "playerOn": "Hamza Abdelkarim" }
+  ],
+  "teamStats": [ { "type": "Possession", "egypt": 42, "opponent": 58 }, { "type": "Shots", "egypt": 8, "opponent": 14 } ]
+}`;
+}
+
+function buildCoachPrompt() {
+  return `You are a football performance analyst. I need the real, verified tournament record for ONE person only — the Egypt national team's head coach, ${COACH_NAME} — at the 2026 FIFA World Cup.
+
+CONFIRMED Egypt results so far (already verified — do not contradict them):
+${EGYPT_FIXTURES_SEED.map((m) => `${m.date} — Egypt vs ${m.opponent} at ${m.venue} (${m.round}): Egypt ${m.scoreEgypt}-${m.scoreOpponent} ${m.opponent}${m.note ? ' — ' + m.note : ''}`).join('\n')}
+
+Give ${COACH_NAME}'s record across these matches: matches played, wins, draws, losses, goals for, goals against, clean sheets.
+
+Respond with STRICT JSON ONLY — no markdown, no commentary — exactly matching this schema:
+{ "name": "${COACH_NAME}", "matchesPlayed": <int>, "wins": <int>, "draws": <int>, "losses": <int>, "goalsFor": <int>, "goalsAgainst": <int>, "cleanSheets": <int> }`;
 }
 
 // Buckets a free-text position (e.g. "Right Wing", "Centre-Back") into one
@@ -326,10 +365,36 @@ function buildFormationGrid(startXI) {
 
 const slugify = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
 
+// Groq is told to reuse the exact canonical roster name everywhere, but in
+// practice its free-text "timeline" entries sometimes shorten or respell a
+// name (e.g. "Salah" instead of "Mohamed Salah", or a transliteration
+// variant). Exact string equality then silently drops that goal/assist/card
+// from the player's stats. We compare on the normalized surname instead —
+// the most stable, distinguishing part of a name — so small variations
+// don't cause a real event to go uncounted.
+const normalizeNameStr = (s) => String(s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
+const lastWord = (s) => {
+  const parts = normalizeNameStr(s).split(/\s+/).filter(Boolean);
+  return parts[parts.length - 1] || '';
+};
+function namesMatch(candidate, target) {
+  if (!candidate || !target) return false;
+  const c = normalizeNameStr(candidate);
+  const t = normalizeNameStr(target);
+  if (c === t) return true;
+  const cLast = lastWord(candidate);
+  const tLast = lastWord(target);
+  if (cLast && tLast && cLast === tLast) return true;
+  // one name fully contains the other (handles "Salah" vs "Mohamed Salah")
+  return (c.length > 2 && t.includes(c)) || (t.length > 2 && c.includes(t));
+}
+
 // ---------------------------------------------------------------------------
-// Persistent, disk-backed cache — see notes above `makeCache` for how this
-// survives restarts (but not Render free-plan redeploys unless a persistent
-// Disk is attached).
+// Persistent, disk-backed cache — survives restarts (but not Render
+// free-plan redeploys/cold starts unless a persistent Disk is attached).
+// Every player and every match gets its OWN cache entry (permanent, until
+// explicitly refreshed via the debug endpoints below), so viewing one
+// player/match never triggers work for any other.
 // ---------------------------------------------------------------------------
 const CACHE_FILE = path.join(__dirname, 'data', 'sports-cache.json');
 
@@ -374,92 +439,135 @@ function makeCache(section, defaultTtlMs) {
   };
 }
 
-// Everything Grok produces lives under this one cache section: 'dataset' is
-// the big permanent blob (players + coach + matches), 'freshness-check' is
-// a short-lived marker (default TTL below) that gates how often we bother
-// asking Grok "has Egypt played a new match yet?".
-const grokCache = makeCache('grok', 3 * 60 * 60 * 1000);
+// 'player:<number>', 'match:<date>', and 'coach' entries live here,
+// permanently, once successfully generated. 'failed:<key>' entries are a
+// short-lived cooldown marker (see withSingleFlight below) so a burst of
+// clicks right after a failure doesn't each re-trigger a new Groq call.
+const grokCache = makeCache('grok', null);
 
-// Guards against duplicate concurrent Groq calls: if several visitors (or
-// several player-stat clicks) hit the server before the first dataset
-// generation finishes, they all share this ONE in-flight request instead of
-// each firing their own full 26-player analyst call. That "thundering herd"
-// of parallel calls is what burns through Groq's daily token budget fastest.
-let inFlightGeneration = null;
+// Generic per-key guard: (1) de-dupes concurrent requests for the SAME
+// player/match so opening one player's stats twice quickly only fires one
+// Groq call, and (2) after a failure, serves the cached error for a couple
+// of minutes instead of immediately retrying — this combination is what
+// actually prevents a handful of clicks from turning into hundreds of API
+// calls.
+const inFlightByKey = new Map();
+async function withSingleFlight(key, fn) {
+  if (inFlightByKey.has(key)) return inFlightByKey.get(key);
 
-async function generateFullDataset() {
-  if (inFlightGeneration) return inFlightGeneration;
+  const failKey = `failed:${key}`;
+  const recentFailure = grokCache.get(failKey);
+  if (recentFailure !== undefined) throw new Error(recentFailure.message);
 
-  inFlightGeneration = (async () => {
-    const raw = await callGrok(buildAnalystPrompt());
-    const parsed = extractJson(raw);
-    if (!parsed || !Array.isArray(parsed.players) || !Array.isArray(parsed.matches)) {
-      throw new Error('Grok response did not match the expected schema (missing players/matches arrays).');
+  const promise = (async () => {
+    try {
+      return await fn();
+    } catch (err) {
+      grokCache.set(failKey, { message: String(err) }, 2 * 60 * 1000);
+      throw err;
     }
-    const record = {
-      generatedAt: new Date().toISOString(),
-      matchesFinished: Number.isFinite(parsed.asOfMatchesFinished) ? parsed.asOfMatchesFinished : EGYPT_FIXTURES_SEED.length,
-      data: parsed,
-    };
-    grokCache.set('dataset', record, null); // permanent until a freshness check invalidates it
-    return record;
   })();
 
+  inFlightByKey.set(key, promise);
   try {
-    return await inFlightGeneration;
+    return await promise;
   } finally {
-    inFlightGeneration = null;
+    inFlightByKey.delete(key);
   }
 }
 
-// At most once per freshness-check TTL, ask Grok (cheaply — no full
-// re-analysis) whether Egypt has finished a new match since the stored
-// dataset was generated. This is the ONLY thing that can trigger a
-// re-fetch; ordinary page views never do.
-async function checkFreshness(currentRecord) {
-  const lastCheck = grokCache.get('freshness-check');
-  if (lastCheck !== undefined) return currentRecord; // checked recently — trust the stored data
-
-  try {
-    const raw = await callGrok(buildFreshnessCheckPrompt(), {
-      system: 'You are a precise research assistant. Reply with only the requested integer, nothing else — no words, no punctuation.',
-    });
-    const n = parseInt(raw.replace(/[^0-9]/g, ''), 10);
-    grokCache.set('freshness-check', { checkedAt: Date.now() }); // uses the section default TTL
-    if (Number.isFinite(n) && n !== currentRecord.matchesFinished) {
-      return await generateFullDataset();
-    }
-  } catch (_) {
-    // If the check itself fails, keep serving the existing stored dataset
-    // rather than breaking the page over a transient network hiccup.
+// Looks up a player by shirt number (preferred, exact) or by name
+// (last-word fuzzy match, for backwards-compatible callers).
+function findRosterPlayer(number, name) {
+  if (number) {
+    const hit = SQUAD_ROSTER.find((p) => String(p.number) === String(number));
+    if (hit) return hit;
   }
-  return currentRecord;
-}
-
-async function getDataset() {
-  const existing = grokCache.get('dataset');
-  if (existing === undefined) return generateFullDataset();
-  return checkFreshness(existing);
-}
-
-function findMatch(dataset, date, opponent) {
-  const matches = dataset.data.matches || [];
-  if (date) {
-    const exact = matches.find((m) => m.date === date);
-    if (exact) return exact;
-  }
-  if (opponent) {
-    const opp = opponent.toLowerCase();
-    return matches.find((m) => String(m.opponent || '').toLowerCase().includes(opp) || opp.includes(String(m.opponent || '').toLowerCase())) || null;
+  if (name) {
+    return SQUAD_ROSTER.find((p) => namesMatch(p.name, name)) || null;
   }
   return null;
 }
 
-// Converts one of Grok's match objects into the same bundle shape the
-// frontend's match page has always consumed (pitch grid, substitutes,
-// team stats, timeline) — so nothing downstream needs to change.
-function buildBundleFromMatch(m) {
-  if (!m) return { available: false, error: 'Match not found in the stored dataset yet.' };
+// Fetches (and permanently caches) tournament + per-match stats for ONE
+// player. Only ever costs a Groq call the FIRST time that specific player
+// is opened.
+async function getPlayerData(rosterPlayer) {
+  const key = `player:${rosterPlayer.number}`;
+  const cached = grokCache.get(key);
+  if (cached !== undefined) return cached;
+
+  return withSingleFlight(key, async () => {
+    const raw = await callGrok(buildPlayerPrompt(rosterPlayer), { maxAttempts: 1 });
+    const parsed = extractJson(raw);
+    if (!parsed || !parsed.tournament || !Array.isArray(parsed.matches)) {
+      throw new Error('Groq response did not match the expected player schema.');
+    }
+    grokCache.set(key, parsed, null);
+    return parsed;
+  });
+}
+
+// Fetches (and permanently caches) the full lineup/timeline/team-stats
+// report for ONE match. Only ever costs a Groq call the FIRST time that
+// specific match is opened.
+async function getMatchData(fixture) {
+  const key = `match:${fixture.date}`;
+  const cached = grokCache.get(key);
+  if (cached !== undefined) return cached;
+
+  return withSingleFlight(key, async () => {
+    const raw = await callGrok(buildMatchPrompt(fixture), { maxAttempts: 1 });
+    const parsed = extractJson(raw);
+    if (!parsed || !Array.isArray(parsed.startXI)) {
+      throw new Error('Groq response did not match the expected match schema.');
+    }
+    grokCache.set(key, parsed, null);
+    return parsed;
+  });
+}
+
+async function getCoachData() {
+  const key = 'coach';
+  const cached = grokCache.get(key);
+  if (cached !== undefined) return cached;
+
+  return withSingleFlight(key, async () => {
+    const raw = await callGrok(buildCoachPrompt(), { maxAttempts: 1 });
+    const parsed = extractJson(raw);
+    if (!parsed || !parsed.name) {
+      throw new Error('Groq response did not match the expected coach schema.');
+    }
+    grokCache.set(key, parsed, null);
+    return parsed;
+  });
+}
+
+// Finds the confirmed fixture (ground-truth date/opponent/score) matching
+// the frontend's query — matches are always one of the manually-curated
+// EGYPT_FIXTURES_SEED entries, never invented by Groq.
+function findFixture(date, opponent) {
+  if (date) {
+    const exact = EGYPT_FIXTURES_SEED.find((m) => m.date === date);
+    if (exact) return exact;
+  }
+  if (opponent) {
+    const opp = opponent.toLowerCase();
+    return (
+      EGYPT_FIXTURES_SEED.find(
+        (m) => m.opponent.toLowerCase().includes(opp) || opp.includes(m.opponent.toLowerCase())
+      ) || null
+    );
+  }
+  return null;
+}
+
+// Converts Groq's per-match JSON into the same bundle shape the frontend's
+// match page has always consumed (pitch grid, substitutes, team stats,
+// timeline) — so nothing downstream needs to change.
+function buildBundleFromMatch(fixture, m) {
+  if (!fixture) return { available: false, error: 'Unknown match.' };
+  if (!m) return { available: false, error: 'Match data not available yet.' };
 
   const startersRaw = (m.startXI || []).map((p) => ({ idPlayer: p.number || slugify(p.name), name: p.name, number: p.number || null, pos: p.position }));
   const { startXI, formation } = buildFormationGrid(startersRaw);
@@ -490,7 +598,7 @@ function buildBundleFromMatch(m) {
           playerName: t.playerOff || null,
           assistId: t.playerOn ? idFor(t.playerOn) : null,
           assistName: t.playerOn || null,
-          teamName: isEgypt ? 'Egypt' : m.opponent,
+          teamName: isEgypt ? 'Egypt' : fixture.opponent,
           isEgypt,
         };
       }
@@ -502,7 +610,7 @@ function buildBundleFromMatch(m) {
         playerName: t.player || null,
         assistId: t.assistPlayer ? idFor(t.assistPlayer) : null,
         assistName: t.assistPlayer || null,
-        teamName: isEgypt ? 'Egypt' : m.opponent,
+        teamName: isEgypt ? 'Egypt' : fixture.opponent,
         isEgypt,
       };
     })
@@ -510,12 +618,12 @@ function buildBundleFromMatch(m) {
 
   return {
     available: true,
-    date: m.date,
-    opponentName: m.opponent,
+    date: fixture.date,
+    opponentName: fixture.opponent,
     egyptIsHome: !!m.egyptIsHome,
-    venue: m.venue || null,
+    venue: fixture.venue || null,
     status: m.status || 'Match Finished',
-    score: { egypt: m.scoreEgypt ?? null, opponent: m.scoreOpponent ?? null },
+    score: { egypt: fixture.scoreEgypt ?? null, opponent: fixture.scoreOpponent ?? null },
     formation: m.formation || formation,
     startXI,
     substitutes,
@@ -526,12 +634,16 @@ function buildBundleFromMatch(m) {
 
 // GET /api/match-full?date=&opponent= — everything the full match page
 // needs in one call: pitch lineup, substitutes, team stats, and timeline.
+// Only fetches (and only ever costs a Groq call for) the ONE match asked
+// for.
 app.get('/api/match-full', async (req, res) => {
   const date = String(req.query.date || '').trim();
   const opponent = String(req.query.opponent || '').trim();
+  const fixture = findFixture(date, opponent);
+  if (!fixture) return res.json({ available: false, error: 'Unknown match.' });
   try {
-    const dataset = await getDataset();
-    res.json(buildBundleFromMatch(findMatch(dataset, date, opponent)));
+    const m = await getMatchData(fixture);
+    res.json(buildBundleFromMatch(fixture, m));
   } catch (err) {
     res.json({ available: false, error: String(err) });
   }
@@ -541,233 +653,145 @@ app.get('/api/match-full', async (req, res) => {
 app.get('/api/match-lineup', async (req, res) => {
   const date = String(req.query.date || '').trim();
   const opponent = String(req.query.opponent || '').trim();
+  const fixture = findFixture(date, opponent);
+  if (!fixture) return res.json({ available: false, error: 'Unknown match.' });
   try {
-    const dataset = await getDataset();
-    res.json(buildBundleFromMatch(findMatch(dataset, date, opponent)));
+    const m = await getMatchData(fixture);
+    res.json(buildBundleFromMatch(fixture, m));
   } catch (err) {
     res.json({ available: false, error: String(err) });
   }
 });
 
-// GET /api/player-tournament-stats?number=10 — a player's tournament-wide
-// totals, straight from the stored Grok dataset (no per-request computation
-// or network calls in the common case).
+// GET /api/player-tournament-stats?number=10 — ONE player's tournament-wide
+// totals. Only fetches (and only ever costs a Groq call for) that player.
 app.get('/api/player-tournament-stats', async (req, res) => {
   const number = String(req.query.number || '').trim();
   const name = String(req.query.name || '').trim();
   if (!number && !name) return res.status(400).json({ available: false, error: 'Missing number or name' });
 
+  const rosterPlayer = findRosterPlayer(number, name);
+  if (!rosterPlayer) {
+    return res.json({ available: false, error: number ? `No player with squad number ${number}.` : 'Player not found.' });
+  }
+
   try {
-    const dataset = await getDataset();
-    const players = dataset.data.players || [];
-    let player = number ? players.find((p) => String(p.number) === number) : null;
-    if (!player && name) {
-      const term = name.split(/\s+/).slice(-1)[0].toLowerCase();
-      player = players.find((p) => p.name && p.name.toLowerCase().includes(term));
-    }
-    if (!player) {
-      return res.json({
-        available: false,
-        error: number ? `No player with squad number ${number} in the stored dataset.` : 'Player not found in the stored dataset.',
-      });
-    }
-    res.json({ available: true, ...player });
+    const data = await getPlayerData(rosterPlayer);
+    res.json({ available: true, number: rosterPlayer.number, name: rosterPlayer.name, position: rosterPlayer.position, ...data.tournament });
   } catch (err) {
     res.json({ available: false, error: String(err) });
   }
 });
 
-// Builds a per-match breakdown (started/subbed, minutes, goals, assists,
-// cards) for one player by re-reading the raw per-match data Grok already
-// gave us (startXI / substitutes / timeline) — no extra Grok call needed.
-// Matching is done by shirt number first (via SQUAD_ROSTER, which is the
-// same source of truth src/App.tsx's SQUAD uses), falling back to name only
-// when no number is supplied.
-// Groq is told to reuse the exact canonical roster name everywhere, but in
-// practice its free-text "timeline" entries sometimes shorten or respell a
-// name (e.g. "Salah" instead of "Mohamed Salah", or a transliteration
-// variant). Exact string equality then silently drops that goal/assist/card
-// from the player's stats. We compare on the normalized surname instead —
-// the most stable, distinguishing part of a name — so small variations
-// don't cause a real event to go uncounted.
-const normalizeNameStr = (s) => String(s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
-const lastWord = (s) => {
-  const parts = normalizeNameStr(s).split(/\s+/).filter(Boolean);
-  return parts[parts.length - 1] || '';
-};
-function namesMatch(candidate, target) {
-  if (!candidate || !target) return false;
-  const c = normalizeNameStr(candidate);
-  const t = normalizeNameStr(target);
-  if (c === t) return true;
-  const cLast = lastWord(candidate);
-  const tLast = lastWord(target);
-  if (cLast && tLast && cLast === tLast) return true;
-  // one name fully contains the other (handles "Salah" vs "Mohamed Salah")
-  return (c.length > 2 && t.includes(c)) || (t.length > 2 && c.includes(t));
-}
-
-function computePlayerMatchStats(dataset, number, name) {
-  const matches = dataset.data.matches || [];
-  const rosterPlayer = number ? SQUAD_ROSTER.find((p) => String(p.number) === String(number)) : null;
-  const targetName = rosterPlayer ? rosterPlayer.name : name;
-  if (!targetName) return null;
-
-  const perMatch = matches.map((m) => {
-    const startEntry = (m.startXI || []).find(
-      (p) => namesMatch(p.name, targetName) || (number && String(p.number) === String(number))
-    );
-    const subEntry = (m.substitutes || []).find(
-      (p) => namesMatch(p.name, targetName) || (number && String(p.number) === String(number))
-    );
-    const started = !!startEntry;
-    const played = started || !!subEntry;
-
-    let subOffMinute = null;
-    let subOnMinute = subEntry ? subEntry.cameOnMinute ?? null : null;
-    let subOffFor = null; // name of teammate this player replaced (if subbed on)
-    let subOnFor = null; // name of teammate who replaced this player (if subbed off)
-
-    (m.timeline || []).forEach((t) => {
-      if (t.type !== 'substitution' || t.team !== 'egypt') return;
-      if (namesMatch(t.playerOn, targetName)) {
-        subOnMinute = subOnMinute ?? (t.minute ?? null);
-        subOffFor = t.playerOff || null;
-      }
-      if (namesMatch(t.playerOff, targetName)) {
-        subOffMinute = t.minute ?? null;
-        subOnFor = t.playerOn || null;
-      }
-    });
-
-    let minutes = 0;
-    if (started) {
-      minutes = subOffMinute != null ? subOffMinute : 90;
-    } else if (played) {
-      minutes = subOnMinute != null ? Math.max(0, 90 - subOnMinute) : 0;
-    }
-
-    let goals = 0;
-    let assists = 0;
-    let yellowCards = 0;
-    let redCards = 0;
-    (m.timeline || []).forEach((t) => {
-      if (t.team !== 'egypt') return;
-      if (t.type === 'goal') {
-        if (namesMatch(t.player, targetName)) goals += 1;
-        if (namesMatch(t.assistPlayer, targetName)) assists += 1;
-      }
-      if (t.type === 'card' && namesMatch(t.player, targetName)) {
-        if (/red/i.test(t.detail || '')) redCards += 1;
-        else yellowCards += 1;
-      }
-    });
-
-    return {
-      date: m.date,
-      opponent: m.opponent,
-      venue: m.venue || null,
-      scoreEgypt: m.scoreEgypt ?? null,
-      scoreOpponent: m.scoreOpponent ?? null,
-      played,
-      started,
-      minutes,
-      goals,
-      assists,
-      yellowCards,
-      redCards,
-      subOnMinute: started ? null : subOnMinute,
-      subOffMinute: started ? subOffMinute : null,
-      subOffFor,
-      subOnFor,
-    };
-  });
-
-  return { number: (rosterPlayer && rosterPlayer.number) || number || null, name: targetName, matches: perMatch };
-}
-
 // GET /api/player-match-stats?number=10 — one row per finished Egypt match
-// (started/subbed, minutes, goals, assists, cards) for a single player,
-// looked up by shirt number. Computed on the fly from the stored dataset,
-// no extra Grok call.
+// (started/subbed, minutes, goals, assists, cards) for ONE player. Shares
+// the same cached per-player data as /api/player-tournament-stats — opening
+// a player's stats panel only ever triggers ONE Groq call total for both.
 app.get('/api/player-match-stats', async (req, res) => {
   const number = String(req.query.number || '').trim();
   const name = String(req.query.name || '').trim();
   if (!number && !name) return res.status(400).json({ available: false, error: 'Missing number or name' });
 
+  const rosterPlayer = findRosterPlayer(number, name);
+  if (!rosterPlayer) {
+    return res.json({ available: false, error: number ? `No player with squad number ${number}.` : 'Player not found.' });
+  }
+
   try {
-    const dataset = await getDataset();
-    const result = computePlayerMatchStats(dataset, number, name);
-    if (!result) {
-      return res.json({
-        available: false,
-        error: number ? `No player with squad number ${number}.` : 'Player not found.',
-      });
-    }
-    res.json({ available: true, ...result });
+    const data = await getPlayerData(rosterPlayer);
+    res.json({ available: true, number: rosterPlayer.number, name: rosterPlayer.name, matches: data.matches });
   } catch (err) {
     res.json({ available: false, error: String(err) });
   }
 });
 
-// GET /api/coach-stats — head coach's tournament-wide record, from the
-// stored Grok dataset.
+// GET /api/coach-stats — head coach's tournament-wide record.
 app.get('/api/coach-stats', async (req, res) => {
   try {
-    const dataset = await getDataset();
-    if (!dataset.data.coach) return res.json({ available: false, error: 'Coach stats not available in the stored dataset.' });
-    res.json({ available: true, ...dataset.data.coach });
+    const coach = await getCoachData();
+    res.json({ available: true, ...coach });
   } catch (err) {
     res.json({ available: false, error: String(err) });
   }
 });
 
-// GET /api/debug/grok-status — see what's currently stored without
-// triggering any new Grok calls.
+// GET /api/debug/grok-status — see what's currently cached (which players,
+// which matches, coach) without triggering any new Groq calls.
 app.get('/api/debug/grok-status', (req, res) => {
-  const stored = grokCache.get('dataset');
+  const section = diskStore.grok || {};
+  const cachedPlayers = Object.keys(section)
+    .filter((k) => k.startsWith('player:'))
+    .map((k) => k.slice('player:'.length));
+  const cachedMatches = Object.keys(section)
+    .filter((k) => k.startsWith('match:'))
+    .map((k) => k.slice('match:'.length));
+  const failedKeys = Object.keys(section).filter((k) => k.startsWith('failed:'));
   res.json({
     groqKeyConfigured: !!GROQ_API_KEY,
     model: GROQ_MODEL,
-    stored: stored
-      ? {
-          generatedAt: stored.generatedAt,
-          matchesFinished: stored.matchesFinished,
-          playerCount: (stored.data.players || []).length,
-          matchCount: (stored.data.matches || []).length,
-          note: stored.data.generatedNote || null,
-        }
-      : null,
+    cachedPlayerNumbers: cachedPlayers,
+    cachedMatchDates: cachedMatches,
+    coachCached: !!section.coach,
+    recentFailures: failedKeys,
   });
 });
 
-// GET /api/debug/grok-raw — the full stored dataset (or triggers the first
-// generation if nothing's stored yet). Useful for eyeballing exactly what
-// Grok returned.
+// GET /api/debug/grok-raw?type=player&number=10
+// GET /api/debug/grok-raw?type=match&date=2026-06-15
+// GET /api/debug/grok-raw?type=coach
+// Triggers (or reads the cached) raw Groq result for exactly ONE thing —
+// never the whole squad — so debugging never itself burns a big chunk of
+// quota.
 app.get('/api/debug/grok-raw', async (req, res) => {
+  const type = String(req.query.type || '').trim();
   try {
-    res.json(await getDataset());
+    if (type === 'player') {
+      const rosterPlayer = findRosterPlayer(String(req.query.number || ''), String(req.query.name || ''));
+      if (!rosterPlayer) return res.status(400).json({ error: 'Unknown player number/name.' });
+      return res.json(await getPlayerData(rosterPlayer));
+    }
+    if (type === 'match') {
+      const fixture = findFixture(String(req.query.date || ''), String(req.query.opponent || ''));
+      if (!fixture) return res.status(400).json({ error: 'Unknown match date/opponent.' });
+      return res.json(await getMatchData(fixture));
+    }
+    if (type === 'coach') return res.json(await getCoachData());
+    res.status(400).json({ error: "Pass ?type=player&number=.. or ?type=match&date=.. or ?type=coach" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
 });
 
-// GET /api/debug/grok-refresh — force a brand-new Grok call right now,
-// bypassing the stored dataset and the freshness-check cooldown. Use this
-// after Egypt plays a match if you don't want to wait for the automatic
-// freshness check to notice.
+// GET /api/debug/grok-refresh?type=player&number=10
+// GET /api/debug/grok-refresh?type=match&date=2026-06-15
+// GET /api/debug/grok-refresh?type=coach
+// Clears the cache (and any failure cooldown) for exactly ONE thing and
+// re-fetches it right now.
 app.get('/api/debug/grok-refresh', async (req, res) => {
+  const type = String(req.query.type || '').trim();
   try {
-    grokCache.delete('dataset');
-    grokCache.delete('freshness-check');
-    const record = await generateFullDataset();
-    res.json({
-      ok: true,
-      generatedAt: record.generatedAt,
-      matchesFinished: record.matchesFinished,
-      playerCount: (record.data.players || []).length,
-      matchCount: (record.data.matches || []).length,
-    });
+    if (type === 'player') {
+      const rosterPlayer = findRosterPlayer(String(req.query.number || ''), String(req.query.name || ''));
+      if (!rosterPlayer) return res.status(400).json({ error: 'Unknown player number/name.' });
+      const key = `player:${rosterPlayer.number}`;
+      grokCache.delete(key);
+      grokCache.delete(`failed:${key}`);
+      return res.json({ ok: true, data: await getPlayerData(rosterPlayer) });
+    }
+    if (type === 'match') {
+      const fixture = findFixture(String(req.query.date || ''), String(req.query.opponent || ''));
+      if (!fixture) return res.status(400).json({ error: 'Unknown match date/opponent.' });
+      const key = `match:${fixture.date}`;
+      grokCache.delete(key);
+      grokCache.delete(`failed:${key}`);
+      return res.json({ ok: true, data: await getMatchData(fixture) });
+    }
+    if (type === 'coach') {
+      grokCache.delete('coach');
+      grokCache.delete('failed:coach');
+      return res.json({ ok: true, data: await getCoachData() });
+    }
+    res.status(400).json({ error: "Pass ?type=player&number=.. or ?type=match&date=.. or ?type=coach" });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }
