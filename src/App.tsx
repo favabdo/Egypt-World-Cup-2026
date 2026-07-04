@@ -134,9 +134,9 @@ const GROUP_MATCHES: {
     egyScore: 3,
     oppScore: 1,
     result: 'W',
-    date: 'Mon, Jun 22',
+    date: 'Sun, Jun 21',
     time: '4:00 AM',
-    isoDate: '2026-06-22',
+    isoDate: '2026-06-21',
   },
   {
     id: 3,
@@ -148,9 +148,9 @@ const GROUP_MATCHES: {
     egyScore: 1,
     oppScore: 1,
     result: 'D',
-    date: 'Sat, Jun 27',
+    date: 'Fri, Jun 26',
     time: '6:00 AM',
-    isoDate: '2026-06-27',
+    isoDate: '2026-06-26',
   },
 ];
 

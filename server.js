@@ -5,6 +5,7 @@
  */
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 
@@ -139,31 +140,82 @@ async function tsdb(path, params) {
 // (e.g. Egypt advancing to a new knockout round).
 const EGYPT_TOURNAMENT_MATCHES = [
   { date: '2026-06-15', opponent: 'Belgium' },
-  { date: '2026-06-22', opponent: 'New Zealand' },
-  { date: '2026-06-27', opponent: 'Iran' },
+  { date: '2026-06-21', opponent: 'New Zealand' },
+  { date: '2026-06-26', opponent: 'Iran' },
   { date: '2026-07-03', opponent: 'Australia' },
 ];
 
 const slug = (s) => String(s || '').trim().replace(/\s+/g, '_');
 
-// Generic small TTL cache helper.
-function makeCache(ttlMs) {
-  const map = new Map();
+// ---------------------------------------------------------------------------
+// Persistent, disk-backed cache. Goal: TheSportsDB is only ever hit ONCE per
+// match/player — every visitor after that is served the stored copy, not a
+// fresh network call. Data for a match that has already finished never
+// changes, so it's cached forever; it only gets invalidated automatically
+// once Egypt actually plays (and finishes) another match, which is when
+// EGYPT_TOURNAMENT_MATCHES below grows and the finished-match count changes.
+//
+// Note: on Render's free plan the local disk is wiped on every redeploy (but
+// survives ordinary restarts/sleep-wake cycles), so this still means "one
+// fetch shared by everyone" for as long as the current deploy is running.
+// For it to also survive redeploys, attach a Render persistent Disk to the
+// service and point CACHE_FILE at a path inside it.
+const CACHE_FILE = path.join(__dirname, 'data', 'sports-cache.json');
+
+function loadCacheFile() {
+  try {
+    return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveCacheFile(store) {
+  try {
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(store));
+  } catch (err) {
+    console.error('Failed to persist cache to disk:', err);
+  }
+}
+
+// In-memory store, hydrated from disk at boot and written back on every
+// change, so both fast in-process reads and cross-restart persistence work.
+const diskStore = loadCacheFile();
+
+// Generic cache backed by a section of diskStore.
+//   ttlMs === null  -> never expires once set (used for finished matches)
+//   ttlMs === number -> expires after that many ms (used for
+//                       scheduled/in-progress matches, so we keep polling
+//                       until the match actually finishes)
+function makeCache(section, defaultTtlMs) {
+  diskStore[section] = diskStore[section] || {};
+  const map = diskStore[section];
   return {
     get(key) {
-      const hit = map.get(key);
-      if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+      const hit = map[key];
+      if (!hit) return undefined;
+      if (hit.ttlMs === null) return hit.data;
+      if (Date.now() - hit.at < hit.ttlMs) return hit.data;
       return undefined;
     },
-    set(key, data) {
-      map.set(key, { data, at: Date.now() });
+    set(key, data, ttlMs = defaultTtlMs) {
+      map[key] = { data, at: Date.now(), ttlMs };
+      saveCacheFile(diskStore);
+    },
+    delete(key) {
+      delete map[key];
+      saveCacheFile(diskStore);
+    },
+    values() {
+      return Object.values(map).map((hit) => hit.data);
     },
   };
 }
 
-const eventIdCache = makeCache(24 * 60 * 60 * 1000); // resolved fixtures barely change
-const matchBundleCache = makeCache(60 * 60 * 1000); // lineup/stats/timeline for a finished match are static
-const tournamentStatsCache = makeCache(5 * 60 * 1000); // aggregate endpoints, cheap to recompute from the bundle cache
+const eventIdCache = makeCache('eventIds', 7 * 24 * 60 * 60 * 1000); // resolved fixtures barely change
+const matchBundleCache = makeCache('matchBundles', 5 * 60 * 1000); // short TTL by default; set to permanent (null) once a match is finished
+const tournamentStatsCache = makeCache('tournamentStats', 5 * 60 * 1000); // aggregate endpoints, cheap to recompute from the bundle cache
 
 // Resolves a TheSportsDB idEvent for an Egypt fixture on a given date,
 // optionally narrowed by opponent name. Tries a direct fixture-name search
@@ -352,7 +404,11 @@ async function getMatchBundle(date, opponent) {
       ],
     };
 
-    matchBundleCache.set(cacheKey, bundle);
+    // A finished match's data (score, lineup, timeline) never changes again
+    // — cache it forever so it's fetched from TheSportsDB exactly once,
+    // ever, and every visitor after that is served this stored copy.
+    const isFinished = bundle.score.egypt != null && bundle.score.opponent != null;
+    matchBundleCache.set(cacheKey, bundle, isFinished ? null : undefined);
     return bundle;
   } catch (err) {
     const empty = { available: false, error: String(err) };
@@ -363,6 +419,14 @@ async function getMatchBundle(date, opponent) {
 
 async function getAllMatchBundles() {
   return Promise.all(EGYPT_TOURNAMENT_MATCHES.map((m) => getMatchBundle(m.date, m.opponent)));
+}
+
+// How many Egypt matches have an actual final score right now. Finished
+// bundles are cached forever (no network cost to check this), so calling
+// this is cheap. Tournament-stat aggregates only need recomputing when this
+// number goes up, i.e. Egypt has played and finished another match.
+function finishedCount(bundles) {
+  return bundles.filter((b) => b.available && b.score?.egypt != null && b.score?.opponent != null).length;
 }
 
 // GET /api/match-full?date=&opponent= — everything the new full match page
@@ -408,11 +472,18 @@ app.get('/api/player-tournament-stats', async (req, res) => {
   if (!number && !name) return res.status(400).json({ available: false, error: 'Missing number or name' });
 
   const cacheKey = number ? `#${number}` : name;
-  const cached = tournamentStatsCache.get(cacheKey);
-  if (cached !== undefined) return res.json(cached);
 
   try {
+    // Cheap: finished matches are already stored on disk, so this rarely
+    // makes a network call. `signature` tells us whether anything about the
+    // tournament has actually moved on since we last computed this player's
+    // stats.
     const bundles = await getAllMatchBundles();
+    const signature = finishedCount(bundles);
+
+    const cached = tournamentStatsCache.get(cacheKey);
+    if (cached !== undefined && cached.signature === signature) return res.json(cached.payload);
+
     const searchTerm = name ? name.split(/\s+/).slice(-1)[0].toLowerCase() : '';
     const matches = (p) => {
       if (!p) return false;
@@ -469,12 +540,12 @@ app.get('/api/player-tournament-stats', async (req, res) => {
 
     if (!anyBundleAvailable) {
       const empty = { available: false, error: 'Could not reach TheSportsDB for any tournament match.' };
-      tournamentStatsCache.set(cacheKey, empty);
+      tournamentStatsCache.set(cacheKey, { signature, payload: empty }, null);
       return res.json(empty);
     }
     if (appearances === 0) {
       const empty = { available: false, error: number ? `No player with squad number ${number} found in any resolved lineup yet.` : 'Player not found in any resolved lineup yet.' };
-      tournamentStatsCache.set(cacheKey, empty);
+      tournamentStatsCache.set(cacheKey, { signature, payload: empty }, null);
       return res.json(empty);
     }
 
@@ -494,7 +565,7 @@ app.get('/api/player-tournament-stats', async (req, res) => {
       redCards,
       cleanSheets,
     };
-    tournamentStatsCache.set(cacheKey, data);
+    tournamentStatsCache.set(cacheKey, { signature, payload: data }, null);
     res.json(data);
   } catch (err) {
     res.json({ available: false, error: String(err) });
@@ -505,16 +576,18 @@ app.get('/api/player-tournament-stats', async (req, res) => {
 // played, W/D/L, goals for/against, clean sheets), shown for the coach card
 // since managers aren't modeled as their own entity on TheSportsDB.
 app.get('/api/coach-stats', async (req, res) => {
-  const cached = tournamentStatsCache.get('__coach__');
-  if (cached !== undefined) return res.json(cached);
-
   try {
     const bundles = await getAllMatchBundles();
+    const signature = finishedCount(bundles);
+
+    const cached = tournamentStatsCache.get('__coach__');
+    if (cached !== undefined && cached.signature === signature) return res.json(cached.payload);
+
     const played = bundles.filter((b) => b.available && b.score?.egypt != null && b.score?.opponent != null);
 
     if (played.length === 0) {
       const empty = { available: false, error: 'Could not reach TheSportsDB for any tournament match.' };
-      tournamentStatsCache.set('__coach__', empty);
+      tournamentStatsCache.set('__coach__', { signature, payload: empty }, null);
       return res.json(empty);
     }
 
@@ -538,7 +611,7 @@ app.get('/api/coach-stats', async (req, res) => {
       goalsAgainst,
       cleanSheets,
     };
-    tournamentStatsCache.set('__coach__', data);
+    tournamentStatsCache.set('__coach__', { signature, payload: data }, null);
     res.json(data);
   } catch (err) {
     res.json({ available: false, error: String(err) });
